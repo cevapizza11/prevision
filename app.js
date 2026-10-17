@@ -31,7 +31,7 @@ const db = firebase.firestore();
 // Seules les journées TERMINÉES sont résumées (jamais la journée en cours).
 // Les prévisions utilisent ensuite ces journées à la place des estimations.
 // ============================================================
-const BUILD_VERSION = "v.17/10/2026 14:30";
+const BUILD_VERSION = "v.17/10/2026 15:00";
 const VERSION_CALCUL = 2; // changer ce numéro force un recalcul complet de toutes les journées
 
 const FIREBASE_MOULE_CONFIG = {
@@ -1035,6 +1035,7 @@ function initPrevisions() {
     hidden.value = today;
   }
   majAffichageDate();
+  afficherPrevisionEnregistree();
   Reel.afficherEtat();
 }
 
@@ -1044,6 +1045,37 @@ function changerDate(delta) {
   base.setDate(base.getDate() + delta);
   hidden.value = base.toISOString().split('T')[0];
   majAffichageDate();
+  parametresChanges();
+}
+
+// Une prévision affichée est TOUJOURS celle des paramètres visibles : dès que la date,
+// la saison, la météo ou l'événement change, on la recalcule (sinon « Enregistrer »
+// enregistrerait l'ancienne). Le CA ajusté à la main est alors effacé.
+let caManuelEnAttente = false;
+function parametresChanges() {
+  const champCA = document.getElementById("prevCAManuel");
+  if (champCA) champCA.value = '';
+  caManuelEnAttente = false;
+  afficherPrevisionEnregistree();
+  if (document.getElementById("prevResultat").style.display === "block") genererPrevisions();
+}
+
+// Bandeau « une prévision est déjà enregistrée pour ce jour »
+async function afficherPrevisionEnregistree() {
+  const el = document.getElementById("prevDejaEnregistree");
+  const ds = document.getElementById("prevDate").value;
+  if (!el || !ds) return;
+  el.innerHTML = '';
+  try {
+    const doc = await db.collection("previsions").doc(ds).get();
+    if (document.getElementById("prevDate").value !== ds) return; // la date a encore changé entre-temps
+    if (doc.exists) {
+      const p = doc.data();
+      el.innerHTML = `<span style="color:var(--gold)">💾 Déjà enregistrée pour ce jour : <strong>${p.clientsMoy} couverts · ${formatEuro(p.caMoy || 0)}</strong>
+        (le ${new Date(p.enregistreLe || 0).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}${p.manuel ? ', CA ajusté à la main' : ''}).</span>
+        <span style="color:var(--text-muted)">Une nouvelle prévision enregistrée la remplacera.</span>`;
+    }
+  } catch (e) { /* hors ligne : pas de bandeau */ }
 }
 
 function majAffichageDate() {
@@ -1159,6 +1191,7 @@ async function genererPrevisions() {
 function appliquerCAManuel() {
   const caManuel = parseFloat(document.getElementById("prevCAManuel").value);
   if (!caManuel || caManuel <= 0) { showToast("Saisis un CA valide !", "error"); return; }
+  caManuelEnAttente = false;
   const pm = prevState.pm || panierMoyenGlobal || 20;
   const clientsMoy = Math.round(caManuel / pm);
   const clientsMin = Math.round(clientsMoy * 0.78);
@@ -1384,6 +1417,11 @@ function afficherResultatsPrevisions(clientsMoy, clientsMin, clientsMax, pm, jou
     </table>
     </div>`;
 
+  const ctxEl = document.getElementById("prevContexte");
+  if (ctxEl) {
+    const lib = s => { const o = document.getElementById(s); return o && o.selectedOptions[0] ? o.selectedOptions[0].textContent.trim() : ''; };
+    ctxEl.textContent = `${libelleJour(prevState.dateStr, true)} · ${lib("prevMeteo")} · ${lib("prevEvent") === 'Aucun' ? 'pas d\'événement' : lib("prevEvent")}${String(sourceLabel || '').startsWith('✏️') ? ' · CA ajusté à la main' : ''}`;
+  }
   // Mémorise la prévision affichée pour le bouton « Enregistrer »
   const staffParCreneau = enSalle.map((n, i) => calcStaff(n, creneaux[i].snack));
   dernierResultat = {
@@ -1825,15 +1863,20 @@ function badgeEcart(p) {
 
 // Enregistre la prévision affichée (silencieux = pas de confirmation, pour la génération de semaine)
 async function enregistrerPrevision(silencieux) {
+  // Un CA tapé à la main sans avoir appuyé sur « Recalculer » est appliqué avant d'enregistrer
+  if (!silencieux && caManuelEnAttente && parseFloat(document.getElementById("prevCAManuel").value) > 0) appliquerCAManuel();
   const r = dernierResultat;
   if (!r || !r.dateStr) { showToast("Génère d'abord une prévision", "error"); return false; }
+  if (!silencieux && r.dateStr !== document.getElementById("prevDate").value) {
+    showToast("La date a changé : clique d'abord sur « Générer les prévisions »", "error"); return false;
+  }
   try {
     if (!silencieux) {
       const ex = await db.collection(PREVISIONS).doc(r.dateStr).get();
       if (ex.exists && !confirm(`Une prévision existe déjà pour ${libelleJour(r.dateStr, true)}. La remplacer ?`)) return false;
     }
     await db.collection(PREVISIONS).doc(r.dateStr).set({ ...r, enregistreLe: Date.now() });
-    if (!silencieux) showToast(`✅ Prévision du ${libelleJour(r.dateStr)} enregistrée`);
+    if (!silencieux) { showToast(`✅ Prévision du ${libelleJour(r.dateStr)} enregistrée`); afficherPrevisionEnregistree(); }
     return true;
   } catch (e) {
     console.error("Enregistrement prévision :", e);
@@ -2000,6 +2043,7 @@ function afficherSemaineSelection() {
 function prevoirCeJour(ds) {
   document.getElementById("prevDate").value = ds;
   showTab('previsions');
+  parametresChanges(); // si une prévision d'un autre jour était affichée, elle est recalculée pour ce jour
   showToast("Choisis la météo / l'événement puis « Générer les prévisions »");
 }
 async function supprimerPrevision(ds) {

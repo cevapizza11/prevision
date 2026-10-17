@@ -61,7 +61,7 @@ body{background:#0a0a0a !important;}
   <header class="app-header">
     <div class="header-brand">
       <span class="logo-emoji">🦪</span>
-      <h1>Moule &amp; Smile<span>Dashboard &amp; Prévisions</span><span class="build-tag">v.17/10/2026 14:30</span></h1>
+      <h1>Moule &amp; Smile<span>Dashboard &amp; Prévisions</span><span class="build-tag">v.17/10/2026 15:00</span></h1>
     </div>
     <div class="header-right">
       <span class="user-tag" id="userEmail"></span>
@@ -378,7 +378,7 @@ body{background:#0a0a0a !important;}
           </div>
           <div class="form-group">
             <label>Saison</label>
-            <select id="prevSaison" style="width:100%;padding:11px 14px;background:var(--ocean-mid);border:1px solid var(--ocean-border);border-radius:8px;color:var(--text-primary);font-size:0.88rem;">
+            <select id="prevSaison" onchange="parametresChanges()" style="width:100%;padding:11px 14px;background:var(--ocean-mid);border:1px solid var(--ocean-border);border-radius:8px;color:var(--text-primary);font-size:0.88rem;">
               <option value="haute">Pleine saison (10 juil. → 23 août)</option>
               <option value="moyenne" selected>Moyenne saison (juin → sept., hors pleine saison)</option>
               <option value="basse">Basse saison (mars → mai, octobre)</option>
@@ -389,7 +389,7 @@ body{background:#0a0a0a !important;}
         <div class="form-row">
           <div class="form-group">
             <label>Météo prévue</label>
-            <select id="prevMeteo" style="width:100%;padding:11px 14px;background:var(--ocean-mid);border:1px solid var(--ocean-border);border-radius:8px;color:var(--text-primary);font-size:0.88rem;">
+            <select id="prevMeteo" onchange="parametresChanges()" style="width:100%;padding:11px 14px;background:var(--ocean-mid);border:1px solid var(--ocean-border);border-radius:8px;color:var(--text-primary);font-size:0.88rem;">
               <option value="mauvais">☁️ Mauvais temps (boost)</option>
               <option value="nuageux" selected>⛅ Nuageux / mitigé</option>
               <option value="beau">☀️ Beau temps</option>
@@ -397,7 +397,7 @@ body{background:#0a0a0a !important;}
           </div>
           <div class="form-group">
             <label>Événement local ?</label>
-            <select id="prevEvent" style="width:100%;padding:11px 14px;background:var(--ocean-mid);border:1px solid var(--ocean-border);border-radius:8px;color:var(--text-primary);font-size:0.88rem;">
+            <select id="prevEvent" onchange="parametresChanges()" style="width:100%;padding:11px 14px;background:var(--ocean-mid);border:1px solid var(--ocean-border);border-radius:8px;color:var(--text-primary);font-size:0.88rem;">
               <option value="non" selected>Aucun</option>
               <option value="marche">Marché / fête locale</option>
               <option value="concert">Concert / événement</option>
@@ -405,7 +405,8 @@ body{background:#0a0a0a !important;}
           </div>
         </div>
 
-        <p style="font-size:0.75rem;color:var(--text-muted);margin-top:4px;">La saison se règle toute seule selon la date (tu peux la changer).</p>
+        <p style="font-size:0.75rem;color:var(--text-muted);margin-top:4px;">La saison se règle toute seule selon la date (tu peux la changer). Dès qu'une prévision est affichée, changer la date, la saison, la météo ou l'événement la recalcule automatiquement.</p>
+        <div id="prevDejaEnregistree" style="font-size:0.8rem;margin-top:8px;"></div>
         <button class="btn btn-primary" onclick="genererPrevisions()" style="margin-top:8px;">
           Générer les prévisions
         </button>
@@ -421,6 +422,7 @@ body{background:#0a0a0a !important;}
 
         <div class="card">
           <div class="card-title">💶 CA prévisionnel de la journée</div>
+          <div id="prevContexte" style="text-align:center;font-size:0.85rem;font-weight:600;color:var(--gold);margin-bottom:10px;"></div>
           <div class="kpi-grid" style="grid-template-columns:1fr 1fr 1fr;">
             <div class="kpi-card">
               <div class="kpi-value" id="prev-ca-min" style="color:var(--danger);font-size:1.3rem;">—</div>
@@ -452,7 +454,7 @@ body{background:#0a0a0a !important;}
           <div style="display:flex;gap:10px;align-items:flex-end;">
             <div class="form-group" style="flex:1;margin:0;">
               <label>Mon CA estimé pour cette journée (€)</label>
-              <input id="prevCAManuel" type="number" placeholder="ex : 6 500" min="0" step="50">
+              <input id="prevCAManuel" oninput="caManuelEnAttente=true" type="number" placeholder="ex : 6 500" min="0" step="50">
             </div>
             <button class="btn btn-primary" onclick="appliquerCAManuel()"
               style="width:auto;padding:12px 20px;white-space:nowrap;flex-shrink:0;">
@@ -672,6 +674,6 @@ body{background:#0a0a0a !important;}
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
 
-<script src="app.js?v=12.2"></script>
+<script src="app.js?v=12.3"></script>
 </body>
 </html>
