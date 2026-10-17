@@ -31,7 +31,7 @@ const db = firebase.firestore();
 // Seules les journées TERMINÉES sont résumées (jamais la journée en cours).
 // Les prévisions utilisent ensuite ces journées à la place des estimations.
 // ============================================================
-const BUILD_VERSION = "v.17/10/2026 16:00";
+const BUILD_VERSION = "v.17/10/2026 16:15";
 const VERSION_CALCUL = 2; // changer ce numéro force un recalcul complet de toutes les journées
 
 const FIREBASE_MOULE_CONFIG = {
@@ -1890,21 +1890,20 @@ async function enregistrerPrevision(silencieux) {
 async function genererSemaine() {
   if (!semaineLundi) return;
   const meteo = document.getElementById("prevMeteo").selectedOptions[0].textContent.trim();
-  if (!confirm(`Générer et enregistrer les prévisions de toute la semaine ${numeroSemaine(semaineLundi)} ?\n\nMétéo utilisée : ${meteo} (modifiable dans l'onglet Prévisions).\nLes jours fermés sont ignorés, les prévisions existantes sont remplacées.`)) return;
+  if (!confirm(`Générer et enregistrer les prévisions de toute la semaine ${numeroSemaine(semaineLundi)} ?\n\nMétéo utilisée : ${meteo} (modifiable dans l'onglet Prévisions).\nLes jours fermés sont ignorés. Les jours qui ont déjà une prévision sont recalculés avec LEUR météo et LEUR événement.`)) return;
   const btn = document.getElementById("btnGenererSemaine");
   if (btn) { btn.disabled = true; btn.textContent = "Génération en cours…"; }
   let nb = 0;
   const hidden = document.getElementById("prevDate");
   const dateAvant = hidden.value;
+  const meteoDefaut = document.getElementById("prevMeteo").value, eventDefaut = document.getElementById("prevEvent").value;
   for (let i = 0; i < 7; i++) {
     const d = new Date(semaineLundi + "T12:00:00"); d.setDate(d.getDate() + i);
     if (!ouvertLe(d)) continue;
-    hidden.value = dateStrLocale(d);
-    majAffichageDate();               // règle aussi la saison automatiquement
-    await genererPrevisions();
-    if (await enregistrerPrevision(true)) nb++;
+    if (await genererEtEnregistrerJour(dateStrLocale(d), meteoDefaut, eventDefaut)) nb++;
   }
   hidden.value = dateAvant; majAffichageDate();
+  document.getElementById("prevMeteo").value = meteoDefaut; document.getElementById("prevEvent").value = eventDefaut;
   if (btn) { btn.disabled = false; btn.textContent = "⚡ Générer et enregistrer toute la semaine"; }
   showToast(`✅ ${nb} prévision${nb > 1 ? 's' : ''} enregistrée${nb > 1 ? 's' : ''}`);
   showTab('semaine');
@@ -2107,18 +2106,18 @@ async function genererMois() {
   const [a, m] = moisCourant.split('-').map(Number);
   const meteo = document.getElementById("prevMeteo").selectedOptions[0].textContent.trim();
   if (!jours.length) { showToast("Restaurant fermé tout ce mois-ci", "error"); return; }
-  if (!confirm(`Générer et enregistrer les ${jours.length} jours ouverts de ${NOMS_MOIS[m - 1]} ${a} ?\n\nMétéo utilisée : ${meteo} (modifiable dans l'onglet Prévisions).\nLes prévisions existantes sont remplacées.`)) return;
+  if (!confirm(`Générer et enregistrer les ${jours.length} jours ouverts de ${NOMS_MOIS[m - 1]} ${a} ?\n\nMétéo utilisée : ${meteo} (modifiable dans l'onglet Prévisions).\nLes jours qui ont déjà une prévision sont recalculés avec LEUR météo et LEUR événement.`)) return;
   const btn = document.getElementById("btnGenererSemaine");
   btn.disabled = true;
   const hidden = document.getElementById("prevDate"), dateAvant = hidden.value;
+  const meteoDefaut = document.getElementById("prevMeteo").value, eventDefaut = document.getElementById("prevEvent").value;
   let nb = 0;
   for (const ds of jours) {
     btn.textContent = `Génération… ${nb + 1}/${jours.length}`;
-    hidden.value = ds; majAffichageDate();
-    await genererPrevisions();
-    if (await enregistrerPrevision(true)) nb++;
+    if (await genererEtEnregistrerJour(ds, meteoDefaut, eventDefaut)) nb++;
   }
   hidden.value = dateAvant; majAffichageDate();
+  document.getElementById("prevMeteo").value = meteoDefaut; document.getElementById("prevEvent").value = eventDefaut;
   btn.disabled = false; btn.textContent = "⚡ Générer et enregistrer tout le mois";
   showToast(`✅ ${nb} prévision${nb > 1 ? 's' : ''} enregistrée${nb > 1 ? 's' : ''}`);
   showTab('semaine');
@@ -2235,4 +2234,22 @@ async function changerConditionsJour(ds, meteo, event) {
   }
   semaineJourOuvert = ds;
   await chargerSemaine();
+}
+
+
+// Génère et enregistre UN jour pour « toute la semaine / tout le mois » :
+// si le jour a déjà une prévision, on garde sa météo et son événement (réglés jour par jour) ;
+// sinon on prend la météo et l'événement choisis dans l'onglet Prévisions.
+async function genererEtEnregistrerJour(ds, meteoDefaut, eventDefaut) {
+  let meteo = meteoDefaut, evt = eventDefaut;
+  try {
+    const ex = await db.collection(PREVISIONS).doc(ds).get();
+    if (ex.exists) { meteo = ex.data().meteo || meteo; evt = ex.data().event || evt; }
+  } catch (e) { /* hors ligne : valeurs par défaut */ }
+  document.getElementById("prevDate").value = ds;
+  majAffichageDate();               // saison automatique selon la date
+  document.getElementById("prevMeteo").value = meteo;
+  document.getElementById("prevEvent").value = evt;
+  await genererPrevisions();
+  return enregistrerPrevision(true);
 }
