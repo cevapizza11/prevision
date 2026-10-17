@@ -3,10 +3,22 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Marmite Bleue — Dashboard V10</title>
+<title>Moule &amp; Smile — Prévisions</title>
 <link rel="stylesheet" href="style.css">
 <link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#0a1628">
+<meta name="theme-color" content="#0a0a0a">
+<!-- Couleurs Moule & Smile (noir et or) : remplace les couleurs bleu océan de style.css -->
+<style>
+:root{
+  --ocean-mid:#1a1a1a; --ocean-border:#3a3220; --gold:#d4a017;
+  --aqua:#e8c766; --aqua-light:#f0d98a;
+}
+body{background:#0a0a0a !important;}
+.app-header,.app-nav{background:#111 !important;border-color:#3a3220 !important;}
+.card,.kpi-card,.login-card{background:#161616 !important;border-color:#3a3220 !important;}
+#loginBox{background:#0a0a0a !important;}
+.build-tag{display:block;font-size:0.65rem;color:#888;font-family:sans-serif;font-weight:normal;letter-spacing:0;margin-top:2px;}
+</style>
 
 <!-- FIREBASE V8 -->
 <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
@@ -23,9 +35,9 @@
 <div id="loginBox" style="display:flex;">
   <div class="login-card">
     <div class="login-logo">
-      <div class="emoji">🍲</div>
-      <h1>La Marmite Bleue</h1>
-      <p>Dashboard Opérationnel</p>
+      <div class="emoji">🦪</div>
+      <h1>Moule &amp; Smile</h1>
+      <p>Dashboard &amp; Prévisions</p>
     </div>
     <div class="form-group">
       <label>Email</label>
@@ -48,8 +60,8 @@
   <!-- HEADER -->
   <header class="app-header">
     <div class="header-brand">
-      <span class="logo-emoji">🍲</span>
-      <h1>La Marmite Bleue<span>Dashboard V10</span></h1>
+      <span class="logo-emoji">🦪</span>
+      <h1>Moule &amp; Smile<span>Dashboard &amp; Prévisions</span><span class="build-tag">v.17/10/2026 13:10</span></h1>
     </div>
     <div class="header-right">
       <span class="user-tag" id="userEmail"></span>
@@ -364,9 +376,9 @@
           <div class="form-group">
             <label>Saison</label>
             <select id="prevSaison" style="width:100%;padding:11px 14px;background:var(--ocean-mid);border:1px solid var(--ocean-border);border-radius:8px;color:var(--text-primary);font-size:0.88rem;">
-              <option value="haute">Haute saison (Juil-Août)</option>
-              <option value="moyenne" selected>Moyenne saison (Juin/Sept)</option>
-              <option value="basse">Basse saison (Oct-Mai)</option>
+              <option value="haute">Pleine saison (10 juil. → 23 août)</option>
+              <option value="moyenne" selected>Moyenne saison (juin → sept., hors pleine saison)</option>
+              <option value="basse">Basse saison (mars → mai, octobre)</option>
             </select>
           </div>
         </div>
@@ -390,9 +402,15 @@
           </div>
         </div>
 
+        <p style="font-size:0.75rem;color:var(--text-muted);margin-top:4px;">La saison se règle toute seule selon la date (tu peux la changer).</p>
         <button class="btn btn-primary" onclick="genererPrevisions()" style="margin-top:8px;">
           Générer les prévisions
         </button>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📲 Journées réelles (appli de commande)</div>
+        <div id="reelEtat"><p class="empty-state">Chargement…</p></div>
       </div>
 
       <!-- Résultat prévisions -->
@@ -459,7 +477,11 @@
 
       <!-- ZONE UPLOAD -->
       <div class="card">
-        <div class="card-title">📥 Import rapport SumUp Pro</div>
+        <div class="card-title">📥 Import rapport SumUp Pro (ancien)</div>
+        <p style="font-size:0.8rem;color:var(--gold);line-height:1.5;margin-bottom:10px;">
+          Les journées réelles arrivent désormais <strong>toutes seules</strong> depuis l'appli de commande
+          (voir onglet 📅 Prévisions). Cet import SumUp n'est plus utilisé par les prévisions.
+        </p>
         <p style="font-size:0.82rem;color:var(--text-secondary);line-height:1.6;margin-bottom:14px;">
           Exporte depuis SumUp : <strong style="color:var(--text-primary);">Back Office → Rapports → Commandes → Exporter CSV</strong><br>
           Le fichier sera lu automatiquement et alimentera les prévisions.
@@ -582,6 +604,23 @@
       </div>
 
       <div class="card">
+        <div class="card-title">🔗 Liaison avec l'appli de commande</div>
+        <div id="reelConnexion"><p class="empty-state">Chargement…</p></div>
+        <p style="font-size:0.8rem;color:var(--text-secondary);line-height:1.7;margin-top:12px;">
+          <strong style="color:var(--text-primary);">Règles des journées réelles :</strong><br>
+          • À activer une fois par appareil avec le mot de passe équipe de la caisse (il n'est pas enregistré). Lecture seule : rien n'est modifié dans l'appli de commande.<br>
+          • Une journée de service va de 5 h à 5 h le lendemain. Seules les journées <strong>terminées</strong> sont prises, jamais celle en cours.<br>
+          • CA réel = additions encaissées. Repas employés, commandes archivées sans paiement et encaissements sans moyen de paiement sont exclus.<br>
+          • Couverts = couverts saisis sur les jetons ; une table sans couverts compte pour la moyenne des autres tables du jour.<br>
+          • Arrivées par tranche de 30 min selon l'heure d'arrivée de la table (avant 11h30 → 11h30, après 23h → 23h).<br>
+          • Journées comparables = même jour de la semaine + même saison. Poids du réel dans la prévision : 1 à 4 journées → 20 %, 5 à 14 → 50 %, 15 et plus → 80 %.<br>
+          • Panier moyen réel utilisé dès 5 journées comparables (même poids). Courbe horaire réelle : même poids, élargie à toute la saison puis à toutes les journées s'il y a moins de 3 journées comparables.<br>
+          • Saisons : pleine 10 juil. → 23 août · moyenne juin → sept. · basse mars → mai et octobre. Jours fermés : nov. → fév., lun.-jeu. en mars, lun.-mar. en avril et octobre.<br>
+          • Météo et événement s'appliquent par-dessus (mauvais temps ×1,20 · beau ×0,82 · marché ×1,28 · concert ×1,40). Fourchette : pessimiste −22 %, optimiste +28 %.
+        </p>
+      </div>
+
+      <div class="card">
         <div class="card-title">📊 Comment est calculé le CA de référence ?</div>
         <p style="font-size:0.83rem;color:var(--text-secondary);line-height:1.7;">
           • Si tu saisis un <strong style="color:var(--text-primary);">CA prévisionnel</strong> dans la saisie journée → c'est lui qui sert de référence.<br>
@@ -598,6 +637,6 @@
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
 
-<script src="app.js?v=11.6"></script>
+<script src="app.js?v=12.0"></script>
 </body>
 </html>

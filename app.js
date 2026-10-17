@@ -14,6 +14,338 @@ firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
 
+// ============================================================
+// DONNÉES RÉELLES — LIAISON AVEC L'APPLI DE COMMANDE MOULE & SMILE (17/10/2026)
+// ------------------------------------------------------------
+// Chaque journée de service terminée est relue dans l'appli de commande
+// (projet Firebase « commandemoulesmile », en LECTURE SEULE) puis résumée
+// dans ce projet, collection « journees_reelles » (un document par jour) :
+//   - CA réel     = somme des additions encaissées (repas employés exclus)
+//   - tables      = nombre d'additions encaissées
+//   - couverts    = somme des couverts saisis sur les jetons (collection « visites »)
+//   - créneaux    = arrivées (couverts) et CA par tranche de 30 min, d'après
+//                   l'heure d'arrivée de la table (création du jeton)
+// Une journée de service va de 5 h du matin à 5 h le lendemain (comme la caisse).
+// Seules les journées TERMINÉES sont résumées (jamais la journée en cours).
+// Les prévisions utilisent ensuite ces journées à la place des estimations.
+// ============================================================
+const BUILD_VERSION = "v.17/10/2026 13:10";
+
+const FIREBASE_MOULE_CONFIG = {
+  apiKey: "AIzaSyDUb3LtVsMAq986DgtHwkMBeQFr8A8A2nU",
+  authDomain: "commandemoulesmile.firebaseapp.com",
+  projectId: "commandemoulesmile",
+  storageBucket: "commandemoulesmile.firebasestorage.app",
+  messagingSenderId: "303564394584",
+  appId: "1:303564394584:web:cbde6960f99cac83517a2d"
+};
+const EMAIL_EQUIPE_MOULE = "mouleandsmile11@gmail.com";
+const HEURE_COUPURE_SERVICE = 5;        // une journée de service commence à 5 h
+const JOURS_PREMIERE_SYNCHRO = 400;     // 1re synchro : on remonte jusqu'à ~13 mois en arrière
+const JOURNEES_REELLES = "journees_reelles";
+
+// Calendrier Moule & Smile
+// Pleine saison : 10 juillet → 23 août. Moyenne : juin, 1-9 juillet, 24 août → septembre.
+// Basse : mars, avril, mai, octobre. Fermé : novembre → février.
+function saisonPour(date) {
+  const m = date.getMonth(), j = date.getDate();
+  if ((m === 6 && j >= 10) || (m === 7 && j <= 23)) return 'haute';
+  if (m >= 5 && m <= 8) return 'moyenne';
+  return 'basse';
+}
+// Ouverture : mars ven-dim · avril et octobre mer-dim · mai → septembre tous les jours
+function ouvertLe(date) {
+  const m = date.getMonth(), js = date.getDay();
+  if (m === 10 || m === 11 || m === 0 || m === 1) return false;
+  if (m === 2) return [5, 6, 0].includes(js);
+  if (m === 3 || m === 9) return [3, 4, 5, 6, 0].includes(js);
+  return true;
+}
+
+// "2026-07-14" pour la journée de service à laquelle appartient un instant (coupure 5 h)
+function jourServiceDe(ms) {
+  const d = new Date(ms - HEURE_COUPURE_SERVICE * 3600 * 1000);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+// Instant de début (5 h) d'une journée de service "AAAA-MM-JJ"
+function debutJourService(dateStr) {
+  const [a, m, j] = dateStr.split('-').map(Number);
+  return new Date(a, m - 1, j, HEURE_COUPURE_SERVICE, 0, 0, 0).getTime();
+}
+function ajouterJours(dateStr, n) {
+  const [a, m, j] = dateStr.split('-').map(Number);
+  const d = new Date(a, m - 1, j + n, 12);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+// Créneau de 30 min (11.5 = 11h30) — borné aux heures d'ouverture 11h30 → 23h
+function creneauDe(ms) {
+  const d = new Date(ms);
+  let h = d.getHours() + (d.getMinutes() >= 30 ? 0.5 : 0);
+  if (h < HEURE_COUPURE_SERVICE) h += 24; // après minuit = fin de service
+  return Math.min(23, Math.max(11.5, h));
+}
+function libelleCreneau(h) { return Math.floor(h) + 'h' + (h % 1 ? '30' : '00'); }
+function msDe(ts) { return ts && ts.toMillis ? ts.toMillis() : (typeof ts === 'number' ? ts : null); }
+
+const Reel = {
+  app: null, auth: null, dbMoule: null, user: null,
+  statut: 'deconnecte',   // 'deconnecte' | 'pret' | 'synchro' | 'erreur'
+  erreur: '',
+  journees: [],           // journées réelles chargées depuis ce projet
+  derniereSynchro: null,
+
+  init() {
+    if (this.app) return true;
+    try {
+      this.app = firebase.apps.find(a => a.name === 'moule') || firebase.initializeApp(FIREBASE_MOULE_CONFIG, 'moule');
+      this.auth = this.app.auth();
+      this.dbMoule = this.app.firestore();
+      this.auth.onAuthStateChanged(u => {
+        this.user = (u && !u.isAnonymous) ? u : null;
+        this.statut = this.user ? 'pret' : 'deconnecte';
+        this.afficherEtat();
+        if (this.user && auth.currentUser) this.synchroniser(false);
+      });
+      return true;
+    } catch (e) {
+      console.error("Liaison appli de commande — initialisation impossible :", e);
+      this.statut = 'erreur'; this.erreur = "Initialisation impossible";
+      return false;
+    }
+  },
+
+  async connecter() {
+    const champ = document.getElementById('reelPwd');
+    const pwd = champ ? champ.value : '';
+    if (!pwd) { showToast("Entre le mot de passe équipe de la caisse Moule & Smile", "error"); return; }
+    if (!this.init()) return;
+    try {
+      await this.auth.signInWithEmailAndPassword(EMAIL_EQUIPE_MOULE, pwd);
+      if (champ) champ.value = '';
+      showToast("✅ Liaison activée — récupération des journées réelles…");
+    } catch (e) {
+      console.error(e);
+      showToast("❌ Mot de passe incorrect ou pas d'internet", "error");
+    }
+  },
+
+  async deconnecter() {
+    if (!confirm("Couper la liaison avec l'appli de commande sur cet appareil ?")) return;
+    try { await this.auth.signOut(); } catch (e) {}
+  },
+
+  // Charge les journées réelles déjà résumées dans ce projet
+  async chargerJournees() {
+    try {
+      const snap = await db.collection(JOURNEES_REELLES).get();
+      this.journees = snap.docs.map(d => d.data()).filter(j => j && j.dateStr)
+        .sort((a, b) => a.dateStr.localeCompare(b.dateStr));
+    } catch (e) {
+      console.error("Lecture journées réelles impossible :", e);
+    }
+    return this.journees;
+  },
+
+  // Relit l'appli de commande depuis la dernière journée résumée et crée/complète
+  // les journées terminées. Sans danger si on l'appelle plusieurs fois.
+  async synchroniser(avecMessage) {
+    if (!this.user || this.statut === 'synchro') { await this.chargerJournees(); this.afficherEtat(); return; }
+    this.statut = 'synchro'; this.afficherEtat();
+    try {
+      const cfgRef = db.collection("config").doc("syncAppliCommande");
+      const cfg = await cfgRef.get();
+      const jourEnCours = jourServiceDe(Date.now());
+      const dernierFait = cfg.exists ? cfg.data().dernierJourComplet : null;
+      const premierJour = dernierFait ? ajouterJours(dernierFait, 1) : ajouterJours(jourEnCours, -JOURS_PREMIERE_SYNCHRO);
+      if (premierJour >= jourEnCours) { // rien de nouveau : la journée en cours n'est jamais résumée
+        await this.chargerJournees();
+        this.derniereSynchro = Date.now(); this.statut = 'pret'; this.afficherEtat();
+        if (avecMessage) showToast("✅ Déjà à jour");
+        return;
+      }
+      const debut = firebase.firestore.Timestamp.fromMillis(debutJourService(premierJour));
+      const fin = firebase.firestore.Timestamp.fromMillis(debutJourService(jourEnCours));
+
+      const [snapHisto, snapVisites] = await Promise.all([
+        this.dbMoule.collection('historique').where('timestamp', '>=', debut).where('timestamp', '<', fin).get(),
+        this.dbMoule.collection('visites').where('heureDepart', '>=', debut).where('heureDepart', '<', fin).get()
+      ]);
+
+      const jours = {};
+      const jourVide = (dateStr) => jours[dateStr] || (jours[dateStr] = {
+        dateStr, ca: 0, tables: 0, couverts: 0, couvertsRepas: 0, tablesSansCouverts: 0, visites: 0, creneaux: {}
+      });
+
+      // Encaissements : CA et nombre de tables
+      snapHisto.forEach(doc => {
+        const h = doc.data();
+        if (h.type === 'employe' || h.modePaiement === 'offert') return;       // repas offert
+        if (!Array.isArray(h.paiements) || !h.paiements.length) return;        // commande archivée / ancien format
+        const ms = h.encaisseLeMs || msDe(h.timestamp);
+        if (!ms) return;
+        const j = jourVide(jourServiceDe(ms));
+        j.ca += Number(h.total) || 0;
+        j.tables++;
+      });
+
+      // Visites : couverts et arrivées par créneau
+      snapVisites.forEach(doc => {
+        const v = doc.data();
+        if (v.table >= 500) return; // repas employé (numéro de table virtuel 500+)
+        const msArr = msDe(v.heureArrivee) || msDe(v.heureDepart);
+        if (!msArr) return;
+        const j = jourVide(jourServiceDe(msDe(v.heureDepart) || msArr));
+        const c = Number(v.couverts) || 0;
+        j.visites++;
+        if (!c) j.tablesSansCouverts++;
+        j.couverts += c;
+        if (v.type !== 'boisson') j.couvertsRepas += c;
+        const cle = creneauDe(msArr).toFixed(1);
+        const cr = j.creneaux[cle] || (j.creneaux[cle] = { arrivees: 0, ca: 0, tables: 0 });
+        cr.arrivees += c; cr.tables++; cr.ca += Number(v.total) || 0;
+      });
+
+      // Enregistre une journée par document (les journées sans aucune vente = fermées, pas de document)
+      const lots = [];
+      let batch = db.batch(), n = 0;
+      Object.values(jours).forEach(j => {
+        if (!j.tables && !j.visites) return;
+        // Tables sans couverts renseignés : on les compte avec la moyenne des autres tables
+        const moyCouverts = (j.visites - j.tablesSansCouverts) > 0 ? j.couverts / (j.visites - j.tablesSansCouverts) : 2;
+        const couvertsEstimes = Math.round(j.couverts + j.tablesSansCouverts * moyCouverts);
+        const d = new Date(j.dateStr + "T12:00:00");
+        batch.set(db.collection(JOURNEES_REELLES).doc(j.dateStr), {
+          dateStr: j.dateStr,
+          date: d,
+          jourSemaine: d.getDay(),
+          saison: saisonPour(d),
+          ca: Math.round(j.ca * 100) / 100,
+          tables: j.tables,
+          couverts: couvertsEstimes,
+          couvertsRepas: j.couvertsRepas,
+          tablesSansCouverts: j.tablesSansCouverts,
+          panierCouvert: couvertsEstimes ? Math.round(j.ca / couvertsEstimes * 100) / 100 : null,
+          creneaux: j.creneaux,
+          source: 'appli de commande',
+          majLe: Date.now()
+        });
+        if (++n >= 400) { lots.push(batch); batch = db.batch(); n = 0; }
+      });
+      lots.push(batch);
+      for (const b of lots) await b.commit();
+      await cfgRef.set({ dernierJourComplet: ajouterJours(jourEnCours, -1), majLe: Date.now() });
+
+      await this.chargerJournees();
+      this.derniereSynchro = Date.now();
+      this.statut = 'pret'; this.erreur = '';
+      const nb = Object.values(jours).filter(j => j.tables || j.visites).length;
+      if (avecMessage || nb) showToast(nb ? `✅ ${nb} journée${nb > 1 ? 's' : ''} réelle${nb > 1 ? 's' : ''} ajoutée${nb > 1 ? 's' : ''}` : "✅ Déjà à jour");
+    } catch (e) {
+      console.error("Synchronisation appli de commande :", e);
+      this.statut = 'erreur';
+      this.erreur = e && e.code === 'permission-denied' ? "Accès refusé (règles Firestore ou liaison à refaire)" : "Synchronisation impossible (internet ?)";
+      showToast("❌ " + this.erreur, "error");
+    }
+    this.afficherEtat();
+  },
+
+  // Recalcule tout depuis le début (si une correction a été faite après coup)
+  async toutRecalculer() {
+    if (!confirm("Relire toutes les journées depuis le début dans l'appli de commande ? (utile après une correction)")) return;
+    try { await db.collection("config").doc("syncAppliCommande").delete(); } catch (e) {}
+    this.synchroniser(true);
+  },
+
+  libelleStatut() {
+    if (this.statut === 'synchro') return "🟡 Synchronisation en cours…";
+    if (this.statut === 'erreur') return "🔴 " + this.erreur;
+    if (this.statut === 'pret') return "🟢 Liaison active avec l'appli de commande";
+    return "🔴 Liaison non connectée sur cet appareil";
+  },
+
+  // Met à jour la carte d'état (onglet Prévisions) et la carte de connexion (Réglages)
+  afficherEtat() {
+    const el = document.getElementById('reelEtat');
+    if (el) {
+      const js = this.journees;
+      const dernieres = js.slice(-7).reverse();
+      el.innerHTML = `
+        <p style="font-size:0.85rem;margin-bottom:8px;"><strong>${this.libelleStatut()}</strong></p>
+        <p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:10px;">
+          ${js.length} journée${js.length > 1 ? 's' : ''} réelle${js.length > 1 ? 's' : ''} enregistrée${js.length > 1 ? 's' : ''}
+          ${this.derniereSynchro ? ' · synchro à ' + new Date(this.derniereSynchro).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : ''}
+        </p>
+        ${dernieres.length ? `<div class="table-wrap"><table>
+          <thead><tr><th>Journée</th><th>Couverts</th><th>Tables</th><th>CA réel</th><th>Panier / couvert</th></tr></thead>
+          <tbody>${dernieres.map(j => `<tr>
+            <td>${new Date(j.dateStr + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit' })}</td>
+            <td style="color:var(--gold);font-weight:600;">${j.couverts}</td>
+            <td>${j.tables}</td>
+            <td>${formatEuro(j.ca || 0)}</td>
+            <td>${j.panierCouvert ? formatEuro(j.panierCouvert) : '—'}</td></tr>`).join('')}</tbody>
+        </table></div>` : `<p class="empty-state">Aucune journée réelle pour l'instant — elles arriveront après les premiers services.</p>`}
+        ${this.user ? `<button class="btn btn-secondary" style="margin-top:10px;" onclick="Reel.synchroniser(true)">🔄 Synchroniser maintenant</button>`
+                    : `<p style="font-size:0.8rem;color:var(--text-secondary);margin-top:8px;">Active la liaison dans ⚙️ Réglages.</p>`}`;
+    }
+    const r = document.getElementById('reelConnexion');
+    if (r) {
+      r.innerHTML = `
+        <p style="font-size:0.85rem;margin-bottom:10px;"><strong>${this.libelleStatut()}</strong></p>
+        ${this.user ? `
+          <button class="btn btn-secondary" onclick="Reel.toutRecalculer()">🔁 Tout recalculer depuis le début</button>
+          <button class="btn btn-secondary" onclick="Reel.deconnecter()">Couper la liaison sur cet appareil</button>
+        ` : `
+          <div class="form-group">
+            <label>Mot de passe équipe de la caisse Moule &amp; Smile</label>
+            <input id="reelPwd" type="password" autocomplete="off" placeholder="Le même que sur caisse.html">
+          </div>
+          <button class="btn btn-primary" onclick="Reel.connecter()">🔗 Activer la liaison</button>
+        `}`;
+    }
+  }
+};
+
+// ------------------------------------------------------------
+// CALCULS À PARTIR DES JOURNÉES RÉELLES
+// ------------------------------------------------------------
+// Journées comparables : même jour de la semaine ET même saison.
+function journeesComparables(jourSemaine, saison) {
+  return Reel.journees.filter(j => j.jourSemaine === jourSemaine && j.saison === saison && j.couverts > 0);
+}
+// Poids des données réelles selon leur nombre (même règle que l'historique saisi)
+function poidsReel(n) { return n >= 15 ? 0.80 : n >= 5 ? 0.50 : n >= 1 ? 0.20 : 0; }
+
+// Part de chaque créneau de 30 min dans les arrivées de la journée (vraie courbe).
+// On prend les journées comparables ; s'il y en a moins de 3, toutes les journées de la saison,
+// puis toutes les journées.
+function courbeReelle(jourSemaine, saison) {
+  let base = journeesComparables(jourSemaine, saison);
+  let source = 'même jour + même saison';
+  if (base.length < 3) { base = Reel.journees.filter(j => j.saison === saison && j.couverts > 0); source = 'même saison'; }
+  if (base.length < 3) { base = Reel.journees.filter(j => j.couverts > 0); source = 'toutes les journées'; }
+  if (!base.length) return null;
+  const parts = {};
+  base.forEach(j => {
+    const total = Object.values(j.creneaux || {}).reduce((s, c) => s + (c.arrivees || 0), 0);
+    if (!total) return;
+    Object.entries(j.creneaux).forEach(([k, c]) => { parts[k] = (parts[k] || 0) + (c.arrivees || 0) / total; });
+  });
+  const nbJours = base.filter(j => Object.values(j.creneaux || {}).some(c => c.arrivees > 0)).length;
+  if (!nbJours) return null;
+  Object.keys(parts).forEach(k => { parts[k] = parts[k] / nbJours; });
+  return { parts, nbJours, source };
+}
+
+// Panier moyen réel par couvert sur les journées comparables (null si moins de 5 journées)
+function panierReel(jourSemaine, saison) {
+  let base = journeesComparables(jourSemaine, saison);
+  if (base.length < 5) base = Reel.journees.filter(j => j.saison === saison && j.couverts > 0);
+  if (base.length < 5) return null;
+  const ca = base.reduce((s, j) => s + (j.ca || 0), 0), cv = base.reduce((s, j) => s + (j.couverts || 0), 0);
+  return cv ? { valeur: Math.round(ca / cv * 100) / 100, nb: base.length } : null;
+}
+
+
 let chartStats = null;
 let chartAvis = null;
 let currentTab = 'dashboard';
@@ -78,6 +410,8 @@ auth.onAuthStateChanged(user => {
     document.getElementById("userEmail").textContent = user.email;
     showTab('dashboard');
     chargerReglagesInit();
+    // Données réelles de l'appli de commande : chargement puis synchro si la liaison est active
+    Reel.chargerJournees().then(() => { Reel.init(); Reel.afficherEtat(); if (Reel.user) Reel.synchroniser(false); });
   } else {
     document.getElementById("loginBox").style.display = "flex";
     document.getElementById("appWrapper").style.display = "none";
@@ -513,7 +847,7 @@ async function soumettreAvis() {
 async function analyserAvisIA(texte, note) {
   const GROQ_KEY = "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";
 
-  const prompt = `Tu es un expert en restauration. Analyse cet avis Google d un restaurant de moules-frites (La Marmite Bleue, Saint-Pierre-la-Mer).
+  const prompt = `Tu es un expert en restauration. Analyse cet avis Google d un restaurant de moules-frites (Moule & Smile, Saint-Pierre-la-Mer).
 Avis (note ${note}/5) : "${texte}"
 Reponds UNIQUEMENT en JSON valide, sans markdown, sans texte avant ou apres :
 {"sentiment":"positif","resume":"resume en 1 phrase max 20 mots","motsCles":["mot1","mot2","mot3"],"reponse":"Reponse courtoise 2-3 phrases en francais"}`;
@@ -694,6 +1028,7 @@ function initPrevisions() {
     hidden.value = today;
   }
   majAffichageDate();
+  Reel.afficherEtat();
 }
 
 function changerDate(delta) {
@@ -711,7 +1046,10 @@ function majAffichageDate() {
   const jours = ["Dimanche","Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi"];
   const mois  = ["jan","fév","mar","avr","mai","juin","juil","août","sep","oct","nov","déc"];
   const affich = `${jours[d.getDay()]} ${d.getDate()} ${mois[d.getMonth()]} ${d.getFullYear()}`;
-  document.getElementById("prevDateAffichage").textContent = affich;
+  document.getElementById("prevDateAffichage").textContent = affich + (ouvertLe(d) ? '' : ' · fermé');
+  // Saison choisie automatiquement selon le calendrier Moule & Smile (modifiable à la main)
+  const sel = document.getElementById("prevSaison");
+  if (sel) sel.value = saisonPour(d);
 }
 
 // Formater un montant en euros avec 2 décimales
@@ -744,68 +1082,71 @@ async function genererPrevisions() {
   const coeffEvent  = { non:1.00, marche:1.28, concert:1.40 }[event];
   const baseClients = 200;
   const pm = panierMoyenGlobal || 20;
-  const clientsCoeffs = Math.round(baseClients * coeffJour * coeffSaison * coeffMeteo * coeffEvent);
+  // Météo et événement sont appliqués UNE seule fois, plus bas (avant : appliqués deux fois)
+  const clientsCoeffs = Math.round(baseClients * coeffJour * coeffSaison);
 
   // ---- LECTURE DONNÉES RÉELLES FIRESTORE ----
   let clientsMoy = clientsCoeffs;
   let sourceLabel = "📐 Estimation (pas encore de données réelles)";
   let fiabilite = 0;
 
+  let pmUtilise = pm;
+  let courbe = null;
+  let infoPanier = '';
   try {
+    // 1) Journées réelles de l'appli de commande (couverts) — synchro si la liaison est active
+    if (Reel.user) await Reel.synchroniser(false); else await Reel.chargerJournees();
+    const reels = journeesComparables(jourSemaine, saison).map(j => ({ dateStr: j.dateStr, clients: j.couverts }));
+
+    // 2) Journées saisies à la main (onglet Saisie Journée), pour les dates sans donnée de l'appli
     const snapshot = await db.collection("stats").get();
-    const allData = snapshot.docs.map(d => ({ ...d.data() }));
+    const datesReelles = new Set(Reel.journees.map(j => j.dateStr));
+    const saisies = snapshot.docs.map(d => d.data()).filter(d => {
+      if (!d.date || !d.date.toDate || !(d.clients > 0)) return false;
+      const dd = d.date.toDate();
+      const ds = dd.toISOString().slice(0, 10);
+      return dd.getDay() === jourSemaine && saisonPour(dd) === saison && !datesReelles.has(ds);
+    }).map(d => ({ clients: d.clients }));
 
-    // Filtrer : même jour de semaine
-    const memJour = allData.filter(d => {
-      if (!d.date || !d.date.toDate) return false;
-      return d.date.toDate().getDay() === jourSemaine && d.clients > 0;
-    });
-
-    // Filtrer : même saison (mois proches)
-    const moisHaute   = [5,6,7,8];     // juin-sept
-    const moisMoyenne = [4,9];          // mai, oct
-    // const moisBasse = reste
-    const memSaison = memJour.filter(d => {
-      const moisD = d.date.toDate().getMonth();
-      if (saison === 'haute')   return moisHaute.includes(moisD);
-      if (saison === 'moyenne') return moisMoyenne.includes(moisD);
-      return !moisHaute.includes(moisD) && !moisMoyenne.includes(moisD);
-    });
-
+    const memSaison = reels.concat(saisies);
     const n = memSaison.length;
     fiabilite = n;
-
-    if (n >= 15) {
-      // 80% réel + 20% coefficients
+    const w = poidsReel(n);
+    if (n > 0) {
       const moyReelle = memSaison.reduce((s, d) => s + d.clients, 0) / n;
-      clientsMoy = Math.round(moyReelle * 0.80 + clientsCoeffs * 0.20);
-      sourceLabel = `📊 Basé sur ${n} journées réelles (fiabilité élevée)`;
-    } else if (n >= 5) {
-      // 50% réel + 50% coefficients
-      const moyReelle = memSaison.reduce((s, d) => s + d.clients, 0) / n;
-      clientsMoy = Math.round(moyReelle * 0.50 + clientsCoeffs * 0.50);
-      sourceLabel = `📈 Basé sur ${n} journées réelles + estimation (fiabilité moyenne)`;
-    } else if (n >= 1) {
-      // 20% réel + 80% coefficients
-      const moyReelle = memSaison.reduce((s, d) => s + d.clients, 0) / n;
-      clientsMoy = Math.round(moyReelle * 0.20 + clientsCoeffs * 0.80);
-      sourceLabel = `🔎 ${n} journée(s) réelle(s) disponible(s) — estimation majoritaire`;
+      clientsMoy = Math.round(moyReelle * w + clientsCoeffs * (1 - w));
+      const detail = reels.length ? `${reels.length} de l'appli de commande` + (saisies.length ? ` + ${saisies.length} saisie(s)` : '') : `${saisies.length} saisie(s)`;
+      sourceLabel = n >= 15 ? `📊 Basé sur ${n} journées réelles (${detail}) — fiabilité élevée`
+                  : n >= 5  ? `📈 Basé sur ${n} journées réelles (${detail}) + estimation — fiabilité moyenne`
+                  :           `🔎 ${n} journée(s) réelle(s) (${detail}) — estimation majoritaire`;
     }
-    // sinon on garde clientsCoeffs et le label "Estimation"
 
+    // 3) Panier moyen réel par couvert (dès 5 journées comparables)
+    const pr = panierReel(jourSemaine, saison);
+    if (pr) {
+      const wp = poidsReel(pr.nb);
+      pmUtilise = Math.round((pr.valeur * wp + pm * (1 - wp)) * 100) / 100;
+      infoPanier = ` · panier réel ${formatEuro(pr.valeur)} sur ${pr.nb} journées`;
+    }
+
+    // 4) Vraie courbe des arrivées par créneau de 30 min
+    const cr = courbeReelle(jourSemaine, saison);
+    if (cr) courbe = { ...cr, poids: poidsReel(cr.nbJours) };
   } catch(e) {
-    console.error("Erreur lecture stats:", e);
+    console.error("Erreur lecture données réelles:", e);
   }
+  if (!ouvertLe(date)) sourceLabel = "⚠️ Jour normalement FERMÉ selon le calendrier · " + sourceLabel;
+  sourceLabel += infoPanier;
 
   // Appliquer météo et événement sur la base pondérée
   clientsMoy = Math.round(clientsMoy * coeffMeteo * coeffEvent);
   const clientsMin = Math.round(clientsMoy * 0.78);
   const clientsMax = Math.round(clientsMoy * 1.28);
 
-  prevState = { clientsMoy, clientsMin, clientsMax, pm, jourSemaine, dateStr, sourceLabel, fiabilite, coeffJour, coeffSaison, coeffMeteo, coeffEvent };
+  prevState = { clientsMoy, clientsMin, clientsMax, pm: pmUtilise, jourSemaine, dateStr, sourceLabel, fiabilite, coeffJour, coeffSaison, coeffMeteo, coeffEvent, courbe };
 
   btn.textContent = "Générer les prévisions"; btn.disabled = false;
-  afficherResultatsPrevisions(clientsMoy, clientsMin, clientsMax, pm, jourSemaine, sourceLabel, fiabilite, coeffJour, coeffSaison, coeffMeteo, coeffEvent);
+  afficherResultatsPrevisions(clientsMoy, clientsMin, clientsMax, pmUtilise, jourSemaine, sourceLabel, fiabilite, coeffJour, coeffSaison, coeffMeteo, coeffEvent);
 }
 
 function appliquerCAManuel() {
@@ -892,7 +1233,7 @@ function afficherResultatsPrevisions(clientsMoy, clientsMin, clientsMax, pm, jou
   };
 
   // ---- PRÉ-CALCUL ARRIVÉES PAR CRÉNEAU ----
-  const arrivees = creneaux.map(c => {
+  let arrivees = creneaux.map(c => {
     if (c.snack) {
       // Snacking : base indépendante avec mêmes coefficients saison/jour/météo/event
       const snackPeak = Math.round(baseSnack * coeffJour * coeffSaison * coeffMeteo * coeffEvent);
@@ -900,6 +1241,22 @@ function afficherResultatsPrevisions(clientsMoy, clientsMin, clientsMax, pm, jou
     }
     return Math.round(clientsMoy * c.pct);
   });
+
+  // ---- VRAIE COURBE (journées réelles de l'appli de commande) ----
+  // Mélange courbe réelle / courbe estimée avec le même poids que pour le nombre de clients
+  // (1-4 journées : 20 % réel · 5-14 : 50 % · 15 et plus : 80 %).
+  const courbe = prevState.courbe;
+  let infoCourbe = "📐 Courbe horaire estimée (pas encore de journées réelles)";
+  if (courbe && courbe.poids > 0) {
+    const w = courbe.poids;
+    const totalEstime = arrivees.reduce((s, n) => s + n, 0);
+    arrivees = creneaux.map((c, i) => {
+      const h = parseInt(c.heure, 10) + (c.heure.endsWith('30') ? 0.5 : 0);
+      const reel = clientsMoy * (courbe.parts[h.toFixed(1)] || 0);
+      return Math.round(reel * w + arrivees[i] * (1 - w));
+    });
+    infoCourbe = `📊 Courbe horaire : ${Math.round(w * 100)} % réelle (${courbe.nbJours} journée${courbe.nbJours > 1 ? 's' : ''}, ${courbe.source})`;
+  }
   const totalArrivees      = arrivees.reduce((s, n) => s + n, 0);
   const totalArriveesResto = creneaux.reduce((s, c, i) => s + (!c.snack ? arrivees[i] : 0), 0);
   const totalArriveesSnack = creneaux.reduce((s, c, i) => s + ( c.snack ? arrivees[i] : 0), 0);
@@ -979,6 +1336,7 @@ function afficherResultatsPrevisions(clientsMoy, clientsMin, clientsMax, pm, jou
   }).join("");
 
   document.getElementById("planningTable").innerHTML = `
+    <p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:8px;">${infoCourbe}</p>
     <div class="table-wrap">
     <table style="min-width:640px;">
       <thead><tr>
@@ -1381,7 +1739,7 @@ async function sauvegarderReglages() {
 // NOTIFICATIONS
 // ============================================================
 function notifier(message) {
-  if (Notification.permission === "granted") new Notification("🍲 Marmite Bleue", { body: message });
+  if (Notification.permission === "granted") new Notification("🦪 Moule & Smile", { body: message });
 }
 if (Notification.permission !== "granted") Notification.requestPermission();
 
