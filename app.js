@@ -31,7 +31,7 @@ const db = firebase.firestore();
 // Seules les journées TERMINÉES sont résumées (jamais la journée en cours).
 // Les prévisions utilisent ensuite ces journées à la place des estimations.
 // ============================================================
-const BUILD_VERSION = "v.17/10/2026 15:30";
+const BUILD_VERSION = "v.17/10/2026 16:00";
 const VERSION_CALCUL = 2; // changer ce numéro force un recalcul complet de toutes les journées
 
 const FIREBASE_MOULE_CONFIG = {
@@ -1967,20 +1967,28 @@ function afficherSemaine() {
       <td>${p && r ? badgeEcart(ecartPct(p.clientsMoy, r.couverts)) : '—'}</td>
       <td>${p && r ? badgeEcart(ecartPct(p.caMoy, r.ca)) : '—'}</td>
       <td>${p ? (p.staffMax || '—') : '—'}</td>
+      <td onclick="event.stopPropagation()" style="white-space:nowrap;">${ferme && !p ? '<span style="color:var(--text-muted)">—</span>' : `
+        <select title="Météo de ce jour" onchange="changerConditionsJour('${ds}', this.value, null)" style="padding:4px;border-radius:6px;background:var(--ocean-mid);color:var(--text-primary);border:1px solid var(--ocean-border);">
+          ${[['', p ? '' : '— météo'], ['beau', '☀️ Beau'], ['nuageux', '⛅ Nuageux'], ['mauvais', '☁️ Mauvais']].filter(o => o[0] || !p).map(o => `<option value="${o[0]}" ${p && p.meteo === o[0] ? 'selected' : ''}>${o[1]}</option>`).join('')}
+        </select>
+        <select title="Événement ce jour" onchange="changerConditionsJour('${ds}', null, this.value)" style="padding:4px;border-radius:6px;background:var(--ocean-mid);color:var(--text-primary);border:1px solid var(--ocean-border);">
+          ${[['non', 'Aucun'], ['marche', 'Marché / fête'], ['concert', 'Concert']].map(o => `<option value="${o[0]}" ${(p ? p.event : 'non') === o[0] ? 'selected' : ''}>${o[1]}</option>`).join('')}
+        </select>`}</td>
     </tr>`);
   }
   document.getElementById("semaineTable").innerHTML = `
     <div class="table-wrap"><table style="min-width:640px;">
-      <thead><tr><th>Jour</th><th>Couverts prévus</th><th>CA prévu</th><th>Couverts réels</th><th>CA réel</th><th>Écart couverts</th><th>Écart CA</th><th>Staff max</th></tr></thead>
+      <thead><tr><th>Jour</th><th>Couverts prévus</th><th>CA prévu</th><th>Couverts réels</th><th>CA réel</th><th>Écart couverts</th><th>Écart CA</th><th>Staff max</th><th>Météo · événement</th></tr></thead>
       <tbody>${lignes.join('')}</tbody>
       <tfoot><tr style="border-top:2px solid var(--ocean-border);font-weight:700;">
         <td>Total semaine</td><td style="color:var(--gold)">${tPrevCv || '—'}</td><td>${tPrevCa ? formatEuro(tPrevCa) : '—'}</td>
         <td>${tReelCv || '—'}</td><td>${tReelCa ? formatEuro(tReelCa) : '—'}</td>
         <td>${tPrevCvComparable ? badgeEcart(ecartPct(tPrevCvComparable, tReelCv && Object.keys(semainePrevisions).filter(ds => reels[ds]).reduce((s, ds) => s + reels[ds].couverts, 0))) : '—'}</td>
         <td>${tPrevCaComparable ? badgeEcart(ecartPct(tPrevCaComparable, Object.keys(semainePrevisions).filter(ds => reels[ds]).reduce((s, ds) => s + (reels[ds].ca || 0), 0))) : '—'}</td>
-        <td></td></tr></tfoot>
+        <td></td><td></td></tr></tfoot>
     </table></div>
-    <p style="font-size:0.75rem;color:var(--text-muted);margin-top:8px;">Écart = (réel − prévu) / prévu, calculé seulement sur les jours qui ont à la fois une prévision et une journée réelle. Vert ≤ 10 % · orange ≤ 25 % · rouge au-delà. Touche un jour pour voir le détail.</p>`;
+    <p style="font-size:0.75rem;color:var(--text-muted);margin-top:8px;">Écart = (réel − prévu) / prévu, calculé seulement sur les jours qui ont à la fois une prévision et une journée réelle. Vert ≤ 10 % · orange ≤ 25 % · rouge au-delà. Touche un jour pour voir le détail.<br>
+      Changer la météo ou l'événement d'un jour recalcule et réenregistre aussitôt la prévision de ce jour (un CA ajusté à la main est alors remplacé, après confirmation).</p>`;
   if (semaineJourOuvert) ouvrirJourSemaine(semaineJourOuvert); else document.getElementById("semaineDetail").innerHTML = '';
 }
 
@@ -2160,7 +2168,7 @@ function afficherMois() {
       const bord = ds === aujourdhui ? 'border:2px solid var(--gold);' : 'border:1px solid var(--ocean-border);';
       ligne += `<td onclick="${dansMois ? `ouvrirJourDepuisMois('${ds}')` : ''}" style="vertical-align:top;padding:6px;${bord}${fond}${dansMois ? 'cursor:pointer;' : ''}min-width:84px;">
         <div style="font-weight:700;font-size:0.8rem;">${d.getDate()}${ferme && dansMois ? ' <span style="font-weight:400;color:var(--text-muted)">fermé</span>' : ''}</div>
-        ${p ? `<div style="color:var(--gold);font-size:0.78rem;">${p.clientsMoy} cv · ${Math.round(p.caMoy)} €</div>` : (dansMois && !ferme ? '<div style="font-size:0.72rem;color:var(--text-muted)">pas de prévision</div>' : '')}
+        ${p ? `<div style="color:var(--gold);font-size:0.78rem;">${({ beau: '☀️ ', nuageux: '⛅ ', mauvais: '☁️ ' })[p.meteo] || ''}${p.event && p.event !== 'non' ? '🎉 ' : ''}${p.clientsMoy} cv · ${Math.round(p.caMoy)} €</div>` : (dansMois && !ferme ? '<div style="font-size:0.72rem;color:var(--text-muted)">pas de prévision</div>' : '')}
         ${r ? `<div style="font-size:0.78rem;">réel ${r.couverts} cv · ${Math.round(r.ca || 0)} €</div>` : ''}
         ${p && r ? `<div style="font-size:0.75rem;">${badgeEcart(ecartPct(p.caMoy, r.ca))}</div>` : ''}
       </td>`;
@@ -2193,4 +2201,38 @@ function ouvrirJourDepuisMois(ds) {
   semaineLundi = lundiDe(ds);
   semaineJourOuvert = ds;
   changerVue('semaine');
+}
+
+
+// ============================================================
+// MÉTÉO / ÉVÉNEMENT JOUR PAR JOUR (depuis le tableau de la semaine)
+// Recalcule la prévision du jour avec les nouvelles conditions et l'enregistre aussitôt.
+// ============================================================
+async function changerConditionsJour(ds, meteo, event) {
+  const p = semainePrevisions[ds];
+  const nouvelleMeteo = meteo !== null ? meteo : (p ? p.meteo : document.getElementById("prevMeteo").value);
+  const nouvelEvent = event !== null ? event : (p ? p.event : 'non');
+  if (!nouvelleMeteo) return;
+  if (p && p.manuel && !confirm(`Le ${libelleJour(ds, true)} avait un CA ajusté à la main (${formatEuro(p.caMoy)}). Le recalculer avec les nouvelles conditions ?`)) {
+    afficherSemaine(); return;
+  }
+  const champs = ["prevDate", "prevMeteo", "prevEvent", "prevSaison"].map(id => document.getElementById(id));
+  const avant = champs.map(c => c.value);
+  try {
+    champs[0].value = ds;
+    majAffichageDate();                   // saison automatique selon la date
+    champs[1].value = nouvelleMeteo;
+    champs[2].value = nouvelEvent;
+    await genererPrevisions();
+    if (await enregistrerPrevision(true)) {
+      semainePrevisions[ds] = { ...dernierResultat, enregistreLe: Date.now() };
+      showToast(`✅ ${libelleJour(ds)} recalculé : ${dernierResultat.clientsMoy} couverts · ${formatEuro(dernierResultat.caMoy)}`);
+    }
+  } finally {
+    champs.forEach((c, i) => { c.value = avant[i]; });
+    majAffichageDate();
+    champs[3].value = avant[3];
+  }
+  semaineJourOuvert = ds;
+  await chargerSemaine();
 }
