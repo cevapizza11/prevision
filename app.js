@@ -31,7 +31,7 @@ const db = firebase.firestore();
 // Seules les journées TERMINÉES sont résumées (jamais la journée en cours).
 // Les prévisions utilisent ensuite ces journées à la place des estimations.
 // ============================================================
-const BUILD_VERSION = "v.17/10/2026 15:00";
+const BUILD_VERSION = "v.17/10/2026 15:30";
 const VERSION_CALCUL = 2; // changer ce numéro force un recalcul complet de toutes les journées
 
 const FIREBASE_MOULE_CONFIG = {
@@ -1911,6 +1911,7 @@ async function genererSemaine() {
 }
 
 function initSemaine() {
+  if (typeof vueMode !== 'undefined' && vueMode === 'mois') { chargerMois(); return; }
   if (!semaineLundi) semaineLundi = lundiDe(dateStrLocale(new Date()));
   chargerSemaine();
 }
@@ -1920,6 +1921,7 @@ function changerSemaine(delta) {
 }
 function allerSemaineDuJour() { semaineLundi = lundiDe(dateStrLocale(new Date())); semaineJourOuvert = null; chargerSemaine(); }
 function allerALaDate(val) {
+  if (val && typeof vueMode !== 'undefined' && vueMode === 'mois') { moisCourant = val.slice(0, 7); chargerMois(); return; }
   if (!val) return;
   semaineLundi = lundiDe(val); semaineJourOuvert = val; chargerSemaine();
 }
@@ -2050,4 +2052,145 @@ async function supprimerPrevision(ds) {
   if (!confirm(`Supprimer la prévision du ${libelleJour(ds, true)} ?`)) return;
   try { await db.collection(PREVISIONS).doc(ds).delete(); semaineJourOuvert = null; chargerSemaine(); showToast("Prévision supprimée"); }
   catch (e) { showToast("❌ Suppression impossible", "error"); }
+}
+
+// ============================================================
+// VUE DU MOIS ENTIER (17/10/2026)
+// Calendrier lundi → dimanche du mois, avec pour chaque jour le prévu et le réel,
+// un total par semaine (colonne de droite) et le total du mois.
+// Un clic sur un jour ouvre ce jour dans la vue Semaine (avec son détail).
+// ============================================================
+let vueMode = 'semaine';   // 'semaine' | 'mois'
+let moisCourant = null;    // "AAAA-MM"
+const NOMS_MOIS = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"];
+
+function changerVue(mode) {
+  vueMode = mode;
+  document.getElementById("btnVueSemaine").className = 'btn ' + (mode === 'semaine' ? 'btn-primary' : 'btn-secondary');
+  document.getElementById("btnVueMois").className = 'btn ' + (mode === 'mois' ? 'btn-primary' : 'btn-secondary');
+  document.getElementById("btnGenererSemaine").textContent = mode === 'mois'
+    ? "⚡ Générer et enregistrer tout le mois" : "⚡ Générer et enregistrer toute la semaine";
+  if (mode === 'mois' && !moisCourant) moisCourant = (semaineLundi || dateStrLocale(new Date())).slice(0, 7);
+  if (mode === 'mois') { document.getElementById("semaineDetail").innerHTML = ''; chargerMois(); }
+  else initSemaine();
+}
+function changerPeriode(delta) {
+  if (vueMode === 'mois') {
+    const [a, m] = moisCourant.split('-').map(Number);
+    const d = new Date(a, m - 1 + delta, 1, 12);
+    moisCourant = dateStrLocale(d).slice(0, 7); chargerMois();
+  } else changerSemaine(delta);
+}
+function allerPeriodeDuJour() {
+  if (vueMode === 'mois') { moisCourant = dateStrLocale(new Date()).slice(0, 7); chargerMois(); }
+  else allerSemaineDuJour();
+}
+function genererPeriode() { return vueMode === 'mois' ? genererMois() : genererSemaine(); }
+
+function joursDuMois(mois) {
+  const [a, m] = mois.split('-').map(Number);
+  const res = [];
+  for (let d = new Date(a, m - 1, 1, 12); d.getMonth() === m - 1; d.setDate(d.getDate() + 1)) res.push(dateStrLocale(d));
+  return res;
+}
+
+async function genererMois() {
+  const jours = joursDuMois(moisCourant).filter(ds => ouvertLe(new Date(ds + "T12:00:00")));
+  const [a, m] = moisCourant.split('-').map(Number);
+  const meteo = document.getElementById("prevMeteo").selectedOptions[0].textContent.trim();
+  if (!jours.length) { showToast("Restaurant fermé tout ce mois-ci", "error"); return; }
+  if (!confirm(`Générer et enregistrer les ${jours.length} jours ouverts de ${NOMS_MOIS[m - 1]} ${a} ?\n\nMétéo utilisée : ${meteo} (modifiable dans l'onglet Prévisions).\nLes prévisions existantes sont remplacées.`)) return;
+  const btn = document.getElementById("btnGenererSemaine");
+  btn.disabled = true;
+  const hidden = document.getElementById("prevDate"), dateAvant = hidden.value;
+  let nb = 0;
+  for (const ds of jours) {
+    btn.textContent = `Génération… ${nb + 1}/${jours.length}`;
+    hidden.value = ds; majAffichageDate();
+    await genererPrevisions();
+    if (await enregistrerPrevision(true)) nb++;
+  }
+  hidden.value = dateAvant; majAffichageDate();
+  btn.disabled = false; btn.textContent = "⚡ Générer et enregistrer tout le mois";
+  showToast(`✅ ${nb} prévision${nb > 1 ? 's' : ''} enregistrée${nb > 1 ? 's' : ''}`);
+  showTab('semaine');
+}
+
+async function chargerMois() {
+  const jours = joursDuMois(moisCourant);
+  const [a, m] = moisCourant.split('-').map(Number);
+  document.getElementById("semaineTitre").textContent = `${NOMS_MOIS[m - 1].charAt(0).toUpperCase() + NOMS_MOIS[m - 1].slice(1)} ${a}`;
+  document.getElementById("semaineTable").innerHTML = '<p class="empty-state">Chargement…</p>';
+  try {
+    if (Reel.user) await Reel.synchroniser(false); else await Reel.chargerJournees();
+    const snap = await db.collection(PREVISIONS).where('dateStr', '>=', jours[0]).where('dateStr', '<=', jours[jours.length - 1]).get();
+    semainePrevisions = {};
+    snap.forEach(doc => { semainePrevisions[doc.id] = doc.data(); });
+  } catch (e) {
+    console.error("Lecture prévisions du mois :", e);
+    document.getElementById("semaineTable").innerHTML = '<p class="empty-state">❌ Lecture impossible (internet ou règles Firestore)</p>';
+    return;
+  }
+  afficherMois();
+}
+
+function afficherMois() {
+  const jours = joursDuMois(moisCourant);
+  const reels = {}; Reel.journees.forEach(j => { reels[j.dateStr] = j; });
+  const aujourdhui = dateStrLocale(new Date());
+  const premierLundi = lundiDe(jours[0]);
+  const tot = { pCv: 0, pCa: 0, rCv: 0, rCa: 0, cpCv: 0, cpCa: 0, crCv: 0, crCa: 0, nbPrev: 0, nbOuverts: 0 };
+  let html = '';
+  let d = new Date(premierLundi + "T12:00:00");
+  while (dateStrLocale(d) <= jours[jours.length - 1]) {
+    let ligne = '';
+    const sem = { pCa: 0, rCa: 0, pCv: 0, rCv: 0, lundi: dateStrLocale(d) };
+    for (let i = 0; i < 7; i++) {
+      const ds = dateStrLocale(d);
+      const dansMois = ds.slice(0, 7) === moisCourant;
+      const p = dansMois ? semainePrevisions[ds] : null, r = dansMois ? reels[ds] : null;
+      const ferme = !ouvertLe(d);
+      if (dansMois) {
+        if (!ferme) tot.nbOuverts++;
+        if (p) { tot.pCv += p.clientsMoy || 0; tot.pCa += p.caMoy || 0; tot.nbPrev++; sem.pCa += p.caMoy || 0; sem.pCv += p.clientsMoy || 0; }
+        if (r) { tot.rCv += r.couverts || 0; tot.rCa += r.ca || 0; sem.rCa += r.ca || 0; sem.rCv += r.couverts || 0; }
+        if (p && r) { tot.cpCv += p.clientsMoy || 0; tot.cpCa += p.caMoy || 0; tot.crCv += r.couverts || 0; tot.crCa += r.ca || 0; }
+      }
+      const fond = !dansMois ? 'opacity:0.25;' : ferme ? 'opacity:0.5;' : '';
+      const bord = ds === aujourdhui ? 'border:2px solid var(--gold);' : 'border:1px solid var(--ocean-border);';
+      ligne += `<td onclick="${dansMois ? `ouvrirJourDepuisMois('${ds}')` : ''}" style="vertical-align:top;padding:6px;${bord}${fond}${dansMois ? 'cursor:pointer;' : ''}min-width:84px;">
+        <div style="font-weight:700;font-size:0.8rem;">${d.getDate()}${ferme && dansMois ? ' <span style="font-weight:400;color:var(--text-muted)">fermé</span>' : ''}</div>
+        ${p ? `<div style="color:var(--gold);font-size:0.78rem;">${p.clientsMoy} cv · ${Math.round(p.caMoy)} €</div>` : (dansMois && !ferme ? '<div style="font-size:0.72rem;color:var(--text-muted)">pas de prévision</div>' : '')}
+        ${r ? `<div style="font-size:0.78rem;">réel ${r.couverts} cv · ${Math.round(r.ca || 0)} €</div>` : ''}
+        ${p && r ? `<div style="font-size:0.75rem;">${badgeEcart(ecartPct(p.caMoy, r.ca))}</div>` : ''}
+      </td>`;
+      d.setDate(d.getDate() + 1);
+    }
+    ligne += `<td style="vertical-align:top;padding:6px;border:1px solid var(--ocean-border);background:rgba(212,160,23,0.08);min-width:96px;">
+      <div style="font-weight:700;font-size:0.75rem;">Sem. ${numeroSemaine(sem.lundi)}</div>
+      <div style="color:var(--gold);font-size:0.78rem;">${sem.pCa ? sem.pCv + ' cv · ' + Math.round(sem.pCa) + ' €' : '—'}</div>
+      ${sem.rCa ? `<div style="font-size:0.78rem;">réel ${sem.rCv} cv · ${Math.round(sem.rCa)} €</div>` : ''}
+    </td>`;
+    html += `<tr>${ligne}</tr>`;
+  }
+  document.getElementById("semaineTable").innerHTML = `
+    <div class="kpi-grid" style="margin-bottom:12px;">
+      <div class="kpi-card"><div class="kpi-value" style="font-size:1.2rem;">${tot.pCa ? formatEuro(tot.pCa) : '—'}</div><div class="kpi-label">CA prévu (${tot.nbPrev}/${tot.nbOuverts} jours ouverts prévus)</div></div>
+      <div class="kpi-card"><div class="kpi-value" style="font-size:1.2rem;">${tot.pCv || '—'}</div><div class="kpi-label">Couverts prévus</div></div>
+      <div class="kpi-card"><div class="kpi-value" style="font-size:1.2rem;">${tot.rCa ? formatEuro(tot.rCa) : '—'}</div><div class="kpi-label">CA réel</div></div>
+      <div class="kpi-card"><div class="kpi-value" style="font-size:1.2rem;">${tot.rCv || '—'}</div><div class="kpi-label">Couverts réels</div></div>
+      <div class="kpi-card"><div class="kpi-value" style="font-size:1.2rem;">${tot.cpCa ? badgeEcart(ecartPct(tot.cpCa, tot.crCa)) : '—'}</div><div class="kpi-label">Écart CA (jours prévus et réalisés)</div></div>
+      <div class="kpi-card"><div class="kpi-value" style="font-size:1.2rem;">${tot.cpCv ? badgeEcart(ecartPct(tot.cpCv, tot.crCv)) : '—'}</div><div class="kpi-label">Écart couverts</div></div>
+    </div>
+    <div class="table-wrap"><table style="min-width:720px;border-collapse:collapse;">
+      <thead><tr><th>Lun</th><th>Mar</th><th>Mer</th><th>Jeu</th><th>Ven</th><th>Sam</th><th>Dim</th><th>Semaine</th></tr></thead>
+      <tbody>${html}</tbody>
+    </table></div>
+    <p style="font-size:0.75rem;color:var(--text-muted);margin-top:8px;">cv = couverts. En or : prévu · en blanc : réel · pourcentage : écart de CA (vert ≤ 10 %, orange ≤ 25 %, rouge au-delà). Touche un jour pour ouvrir son détail.</p>`;
+}
+
+function ouvrirJourDepuisMois(ds) {
+  semaineLundi = lundiDe(ds);
+  semaineJourOuvert = ds;
+  changerVue('semaine');
 }

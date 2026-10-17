@@ -61,7 +61,7 @@ body{background:#0a0a0a !important;}
   <header class="app-header">
     <div class="header-brand">
       <span class="logo-emoji">🦪</span>
-      <h1>Moule &amp; Smile<span>Dashboard &amp; Prévisions</span><span class="build-tag">v.17/10/2026 15:00</span></h1>
+      <h1>Moule &amp; Smile<span>Dashboard &amp; Prévisions</span><span class="build-tag">v.17/10/2026 15:30</span></h1>
     </div>
     <div class="header-right">
       <span class="user-tag" id="userEmail"></span>
@@ -485,23 +485,27 @@ body{background:#0a0a0a !important;}
     <div class="tab-content" id="tab-semaine">
       <div class="card">
         <div class="card-title">🗓️ Mes prévisions enregistrées</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px;">
+          <button id="btnVueSemaine" class="btn btn-primary" style="margin-top:0;" onclick="changerVue('semaine')">Semaine</button>
+          <button id="btnVueMois" class="btn btn-secondary" style="margin-top:0;" onclick="changerVue('mois')">Mois entier</button>
+        </div>
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-          <button onclick="changerSemaine(-1)"
+          <button onclick="changerPeriode(-1)"
             style="width:42px;height:42px;border:1px solid var(--ocean-border);background:var(--ocean-mid);color:var(--text-primary);border-radius:8px;font-size:1.2rem;cursor:pointer;flex-shrink:0;">‹</button>
           <div id="semaineTitre"
             style="flex:1;padding:11px 14px;background:var(--ocean-mid);border:1px solid var(--ocean-border);border-radius:8px;color:var(--text-primary);font-size:0.88rem;text-align:center;font-weight:600;">—</div>
-          <button onclick="changerSemaine(1)"
+          <button onclick="changerPeriode(1)"
             style="width:42px;height:42px;border:1px solid var(--ocean-border);background:var(--ocean-mid);color:var(--text-primary);border-radius:8px;font-size:1.2rem;cursor:pointer;flex-shrink:0;">›</button>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
-          <button class="btn btn-secondary" style="width:auto;margin-top:0;" onclick="allerSemaineDuJour()">Cette semaine</button>
+          <button class="btn btn-secondary" style="width:auto;margin-top:0;" onclick="allerPeriodeDuJour()">Aujourd'hui</button>
           <div class="form-group" style="margin:0;flex:1;min-width:160px;">
             <label>Aller à une date</label>
             <input type="date" onchange="allerALaDate(this.value)">
           </div>
         </div>
         <div id="semaineTable"></div>
-        <button class="btn btn-primary" id="btnGenererSemaine" onclick="genererSemaine()" style="margin-top:12px;">
+        <button class="btn btn-primary" id="btnGenererSemaine" onclick="genererPeriode()" style="margin-top:12px;">
           ⚡ Générer et enregistrer toute la semaine
         </button>
       </div>
@@ -652,7 +656,7 @@ body{background:#0a0a0a !important;}
           • Journées comparables = même jour de la semaine + même saison. Poids du réel dans la prévision : 1 à 4 journées → 20 %, 5 à 14 → 50 %, 15 et plus → 80 %.<br>
           • Panier moyen réel utilisé dès 5 journées comparables (même poids). Courbe horaire réelle : même poids, élargie à toute la saison puis à toutes les journées s'il y a moins de 3 journées comparables.<br>
           • Saisons : pleine 10 juil. → 23 août · moyenne juin → sept. · basse mars → mai et octobre. Jours fermés : nov. → fév., lun.-jeu. en mars, lun.-mar. en avril et octobre.<br>
-          • Prévisions enregistrées : une par date (réenregistrer remplace). « Générer toute la semaine » ignore les jours fermés et utilise la météo / l'événement choisis dans l'onglet Prévisions. Écart prévu / réel = (réel − prévu) / prévu : vert ≤ 10 %, orange ≤ 25 %, rouge au-delà.<br>
+          • Prévisions enregistrées : une par date (réenregistrer remplace). « Générer toute la semaine / tout le mois » ignore les jours fermés et utilise la météo / l'événement choisis dans l'onglet Prévisions. Écart prévu / réel = (réel − prévu) / prévu : vert ≤ 10 %, orange ≤ 25 %, rouge au-delà.<br>
           • Météo et événement s'appliquent par-dessus (mauvais temps ×1,20 · beau ×0,82 · marché ×1,28 · concert ×1,40). Fourchette : pessimiste −22 %, optimiste +28 %.
         </p>
       </div>
@@ -674,6 +678,6 @@ body{background:#0a0a0a !important;}
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
 
-<script src="app.js?v=12.3"></script>
+<script src="app.js?v=12.4"></script>
 </body>
 </html>
