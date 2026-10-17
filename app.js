@@ -31,7 +31,7 @@ const db = firebase.firestore();
 // Seules les journées TERMINÉES sont résumées (jamais la journée en cours).
 // Les prévisions utilisent ensuite ces journées à la place des estimations.
 // ============================================================
-const BUILD_VERSION = "v.17/10/2026 16:55";
+const BUILD_VERSION = "v.17/10/2026 17:40";
 const VERSION_CALCUL = 2; // changer ce numéro force un recalcul complet de toutes les journées
 
 const FIREBASE_MOULE_CONFIG = {
@@ -396,6 +396,9 @@ let chartStats = null;
 let chartAvis = null;
 let currentTab = 'dashboard';
 let panierMoyenGlobal = 20;
+// Effectif minimum présent pendant toute l'ouverture (réglable dans Réglages, 0 = aucun minimum).
+// Équipe minimum : 1 marmite + 1 friteuse + 1 salle, puis salle / bar en alternance au-delà de 3.
+let effectifMinGlobal = 3;
 
 // ============================================================
 // NAVIGATION TABS
@@ -1272,42 +1275,40 @@ function afficherResultatsPrevisions(clientsMoy, clientsMin, clientsMax, pm, jou
     `${joursLabel} · ${clientsMin}–${clientsMax} clients estimés · Panier moyen ${pm} €<br>
     <span style="font-size:0.75rem;margin-top:4px;display:inline-block;color:var(--aqua-light);">${sourceLabel || ''}</span>`;
 
-  // ---- CRÉNEAUX HORAIRES ----
-  // Répartition : 40% midi / 60% soir (Saint-Pierre-la-Mer, bord de mer)
-  // Midi  : 0.03+0.07+0.11+0.10+0.06+0.03 = 0.40
-  // Soir  : 0.025+0.03+0.045+0.06+0.075+0.09+0.09+0.065+0.035+0.015+0.005 = 0.535 → ×(0.60/0.535)
-  // Snack : volumétrie propre × 0.40 via calcul séparé dans le code
+  // ---- CRÉNEAUX HORAIRES (courbe estimée, avant journées réelles) ----
+  // Moule & Smile sert les moules à volonté en continu de 11h30 à 23h : pas de mode
+  // « snacking » l'après-midi, tous les créneaux sont calculés de la même façon
+  // (repas 1h30, même panier, mêmes règles de personnel).
+  // Poids bruts ci-dessous, ramenés à 100 % juste après : midi ≈ 33 %, après-midi ≈ 11 %, soir ≈ 56 %.
+  // Dès qu'il y a des journées réelles, la vraie courbe prend le relais (voir plus bas).
   const creneaux = [
-    // ── MIDI 40% ──────────────────────────────────────────
     { heure: "11h30", label: "Ouverture midi",  pct: 0.030 },
     { heure: "12h00", label: "Montée midi",     pct: 0.070 },
     { heure: "12h30", label: "🍽️ Peak midi",   pct: 0.110 },
     { heure: "13h00", label: "🍽️ Peak midi",   pct: 0.100 },
     { heure: "13h30", label: "Descente midi",   pct: 0.060 },
     { heure: "14h00", label: "Fin midi",        pct: 0.030 },
-    // ── SNACKING (volumétrie ×0.40 appliquée dans calcul) ─
-    { heure: "14h30", label: "Snack",           pct: 0.015, snack: true },
-    { heure: "15h00", label: "Snack",           pct: 0.022, snack: true },
-    { heure: "15h30", label: "🏖️ Peak snack",  pct: 0.028, snack: true },
-    { heure: "16h00", label: "🏖️ Peak snack",  pct: 0.028, snack: true },
-    { heure: "16h30", label: "Snack",           pct: 0.022, snack: true },
-    { heure: "17h00", label: "Fin snack",       pct: 0.015, snack: true },
-    // ── SOIR 60% ──────────────────────────────────────────
-    { heure: "17h30", label: "Reprise resto",   pct: 0.025 },
-    { heure: "18h00", label: "Montée soir",     pct: 0.030 },
-    { heure: "18h30", label: "Montée soir",     pct: 0.044 },
-    { heure: "19h00", label: "Montée soir",     pct: 0.059 },
-    { heure: "19h30", label: "Montée soir",     pct: 0.074 },
-    { heure: "20h00", label: "Pré-peak soir",   pct: 0.074 },
-    { heure: "20h30", label: "🔥 Peak soir",    pct: 0.089 },
-    { heure: "21h00", label: "🔥 Peak soir",    pct: 0.089 },
-    { heure: "21h30", label: "🔥 Peak soir",    pct: 0.064 },
-    { heure: "22h00", label: "Fin de service",  pct: 0.034 },
-    { heure: "22h30", label: "Fin de service",  pct: 0.015 },
-    { heure: "23h00", label: "Fermeture",       pct: 0.005 }
-    // Midi : 0.030+0.070+0.110+0.100+0.060+0.030 = 0.400 ✅
-    // Soir : 0.028+0.034+0.050+0.067+0.084+0.084+0.101+0.101+0.073+0.039+0.017+0.006 = 0.684 → ×(0.60/0.684)
+    { heure: "14h30", label: "Après-midi",      pct: 0.020 },
+    { heure: "15h00", label: "Après-midi",      pct: 0.022 },
+    { heure: "15h30", label: "Après-midi",      pct: 0.025 },
+    { heure: "16h00", label: "Après-midi",      pct: 0.025 },
+    { heure: "16h30", label: "Après-midi",      pct: 0.022 },
+    { heure: "17h00", label: "Après-midi",      pct: 0.020 },
+    { heure: "17h30", label: "Reprise soir",    pct: 0.028 },
+    { heure: "18h00", label: "Montée soir",     pct: 0.034 },
+    { heure: "18h30", label: "Montée soir",     pct: 0.050 },
+    { heure: "19h00", label: "Montée soir",     pct: 0.067 },
+    { heure: "19h30", label: "Montée soir",     pct: 0.084 },
+    { heure: "20h00", label: "Pré-peak soir",   pct: 0.084 },
+    { heure: "20h30", label: "🔥 Peak soir",    pct: 0.101 },
+    { heure: "21h00", label: "🔥 Peak soir",    pct: 0.101 },
+    { heure: "21h30", label: "🔥 Peak soir",    pct: 0.073 },
+    { heure: "22h00", label: "Fin de service",  pct: 0.039 },
+    { heure: "22h30", label: "Fin de service",  pct: 0.017 },
+    { heure: "23h00", label: "Fermeture",       pct: 0.006 }
   ];
+  const sommePct = creneaux.reduce((s, c) => s + c.pct, 0);
+  creneaux.forEach(c => { c.pct = c.pct / sommePct; });
 
   // ---- PANIER MOYEN PAR MODE DE SERVICE ----
   const pmResto   = pm;          // moules : panier moyen réglages (ex: 24-28€)
@@ -1370,6 +1371,20 @@ function afficherResultatsPrevisions(clientsMoy, clientsMin, clientsMax, pm, jou
 
   // ---- CALCUL STAFF ----
   function calcStaff(nSalle, isSnack) {
+    return appliquerEffectifMin(calcStaffBrut(nSalle, isSnack));
+  }
+  function appliquerEffectifMin(st) {
+    const min = effectifMinGlobal || 0;
+    if (min <= 0 || st.total >= min) return st;
+    const r = { ...st };
+    const ordre = ['marmites', 'friteuses', 'salle'];
+    ordre.forEach(k => { if (r.total < min && r[k] < 1) { r[k] = 1; r.total++; } });
+    let alt = 0;
+    while (r.total < min) { const k = alt++ % 2 ? 'bar' : 'salle'; r[k]++; r.total++; }
+    r.minimum = true;
+    return r;
+  }
+  function calcStaffBrut(nSalle, isSnack) {
     if (isSnack) {
       // Mode snacking : staff minimum 3 quelle que soit l'affluence
       const friteuses   = 1; // toujours 1 friteuse
@@ -1398,9 +1413,7 @@ function afficherResultatsPrevisions(clientsMoy, clientsMin, clientsMax, pm, jou
     const rowClass = c.snack ? 'snack-row' : isPeak ? 'peak-row' : isCreux ? 'creux-row' : '';
     const pctSalle = maxEnSalle > 0 ? Math.round((salle / maxEnSalle) * 100) : 0;
     const barColor = pctSalle >= 85 ? 'var(--danger)' : pctSalle >= 60 ? 'var(--warning)' : 'var(--success)';
-    const modeTag  = c.snack
-      ? `<span class="mode-snack">🍟 Snacking</span>`
-      : `<span class="mode-resto">🦪 Resto</span>`;
+    const modeTag  = ''; // service continu : plus de distinction resto / snacking
 
     return `<tr class="${rowClass}">
       <td><strong>${c.heure}</strong></td>
@@ -1443,14 +1456,14 @@ function afficherResultatsPrevisions(clientsMoy, clientsMin, clientsMax, pm, jou
         <tr style="border-top:2px solid var(--ocean-border);">
           <td colspan="2" style="padding-top:12px;">
             <div style="display:flex;flex-direction:column;gap:4px;">
-              <span class="mode-resto" style="font-size:0.72rem;">🦪 Resto : durée repas 1h30</span>
-              <span class="mode-snack" style="font-size:0.72rem;">🍟 Snacking : rotation 20 min, staff mini 3</span>
+              <span class="mode-resto" style="font-size:0.72rem;">🦪 Service continu 11h30 → 23h · durée repas 1h30</span>
+              <span style="font-size:0.72rem;color:var(--text-muted);">Effectif minimum : ${effectifMinGlobal || 0} personne${(effectifMinGlobal || 0) > 1 ? 's' : ''}</span>
             </div>
           </td>
           <td style="text-align:center;padding-top:12px;">
             <div style="display:flex;flex-direction:column;gap:4px;align-items:center;">
               <span class="sbadge total-badge">= ${totalArrivees}</span>
-              <span style="font-size:0.68rem;color:var(--text-muted);">${totalArriveesResto} resto / ${totalArriveesSnack} snack</span>
+              <span style="font-size:0.68rem;color:var(--text-muted);">arrivées de la journée</span>
             </div>
           </td>
           <td style="padding-top:12px;">
@@ -1458,8 +1471,7 @@ function afficherResultatsPrevisions(clientsMoy, clientsMin, clientsMax, pm, jou
           </td>
           <td style="padding-top:12px;">
             <div style="display:flex;flex-direction:column;gap:2px;">
-              <span style="font-size:0.72rem;color:var(--gold);">${formatEuro(caTotalResto)} resto</span>
-              <span style="font-size:0.72rem;color:var(--success);">${formatEuro(caTotalSnack)} snack</span>
+              <span style="font-size:0.72rem;color:var(--gold);">${formatEuro(caTotalResto + caTotalSnack)}</span>
             </div>
           </td>
           <td colspan="2"></td>
@@ -1826,6 +1838,7 @@ async function chargerReglagesInit() {
     const doc = await db.collection("config").doc("reglages").get();
     if (doc.exists) {
       panierMoyenGlobal = doc.data().panierMoyen || 20;
+      if (doc.data().effectifMin !== undefined) effectifMinGlobal = doc.data().effectifMin;
       console.log("Panier moyen chargé :", panierMoyenGlobal, "€");
     } else {
       console.log("Pas de réglages en base, panier moyen par défaut :", panierMoyenGlobal, "€");
@@ -1839,6 +1852,8 @@ async function chargerReglages() {
   const doc = await db.collection("config").doc("reglages").get().catch(() => null);
   const val = doc && doc.exists ? doc.data().panierMoyen : panierMoyenGlobal;
   document.getElementById("inputPanierMoyen").value = val;
+  const em = document.getElementById("inputEffectifMin");
+  if (em) em.value = doc && doc.exists && doc.data().effectifMin !== undefined ? doc.data().effectifMin : effectifMinGlobal;
   document.getElementById("affichagePanier").textContent = val + " €";
 }
 
@@ -1846,7 +1861,10 @@ async function sauvegarderReglages() {
   const val = +document.getElementById("inputPanierMoyen").value;
   if (!val || val < 1) { showToast("Panier moyen invalide", "error"); return; }
   try {
-    await db.collection("config").doc("reglages").set({ panierMoyen: val });
+    const emEl = document.getElementById("inputEffectifMin");
+    const em = emEl && emEl.value !== '' ? Math.max(0, Math.round(+emEl.value)) : effectifMinGlobal;
+    await db.collection("config").doc("reglages").set({ panierMoyen: val, effectifMin: em }, { merge: true });
+    effectifMinGlobal = em;
     panierMoyenGlobal = val;
     document.getElementById("affichagePanier").textContent = val + " €";
     showToast("✅ Réglages sauvegardés !");
