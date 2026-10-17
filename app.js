@@ -31,7 +31,7 @@ const db = firebase.firestore();
 // Seules les journées TERMINÉES sont résumées (jamais la journée en cours).
 // Les prévisions utilisent ensuite ces journées à la place des estimations.
 // ============================================================
-const BUILD_VERSION = "v.17/10/2026 16:45";
+const BUILD_VERSION = "v.17/10/2026 16:55";
 const VERSION_CALCUL = 2; // changer ce numéro force un recalcul complet de toutes les journées
 
 const FIREBASE_MOULE_CONFIG = {

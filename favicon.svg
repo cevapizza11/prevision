@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="or" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#b8860b"/>
+      <stop offset="1" stop-color="#f0d27a"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0a0a0a"/>
+  <rect x="2" y="2" width="60" height="60" rx="12" fill="none" stroke="#d4a017" stroke-width="2" opacity="0.55"/>
+  <!-- barres de fréquentation -->
+  <rect x="12" y="38" width="8" height="14" rx="2" fill="url(#or)"/>
+  <rect x="24" y="31" width="8" height="21" rx="2" fill="url(#or)"/>
+  <rect x="36" y="25" width="8" height="27" rx="2" fill="url(#or)"/>
+  <rect x="48" y="17" width="8" height="35" rx="2" fill="url(#or)" opacity="0.45"/>
+  <!-- tendance prévue -->
+  <polyline points="13,30 26,23 38,18 51,10" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="0.1 5.5"/>
+  <path d="M45 9 L53 9 L53 17" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
