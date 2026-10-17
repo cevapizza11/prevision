@@ -61,7 +61,7 @@ body{background:#0a0a0a !important;}
   <header class="app-header">
     <div class="header-brand">
       <span class="logo-emoji">🦪</span>
-      <h1>Moule &amp; Smile<span>Dashboard &amp; Prévisions</span><span class="build-tag">v.17/10/2026 16:15</span></h1>
+      <h1>Moule &amp; Smile<span>Dashboard &amp; Prévisions</span><span class="build-tag">v.17/10/2026 16:45</span></h1>
     </div>
     <div class="header-right">
       <span class="user-tag" id="userEmail"></span>
@@ -657,6 +657,7 @@ body{background:#0a0a0a !important;}
           • Panier moyen réel utilisé dès 5 journées comparables (même poids). Courbe horaire réelle : même poids, élargie à toute la saison puis à toutes les journées s'il y a moins de 3 journées comparables.<br>
           • Saisons : pleine 10 juil. → 23 août · moyenne juin → sept. · basse mars → mai et octobre. Jours fermés : nov. → fév., lun.-jeu. en mars, lun.-mar. en avril et octobre.<br>
           • Prévisions enregistrées : une par date (réenregistrer remplace). « Générer toute la semaine / tout le mois » ignore les jours fermés ; un jour qui a déjà une prévision garde sa météo et son événement, un jour sans prévision prend ceux choisis dans l'onglet Prévisions. La météo et l'événement se changent ensuite jour par jour dans le tableau de la semaine (recalcul et enregistrement immédiats). Écart prévu / réel = (réel − prévu) / prévu : vert ≤ 10 %, orange ≤ 25 %, rouge au-delà.<br>
+          • <strong style="color:var(--text-primary);">Effet de période (automatique)</strong> : en pleine saison, avant / après le 15 août ; dans les autres saisons, début (1-10), milieu (11-20) et fin (21-31) du mois. L'appli mesure sur tes journées réelles l'écart de chaque période par rapport à la moyenne du même jour de la semaine. Inactif tant qu'une période a moins de 5 journées réelles ; appliqué à 50 % de 5 à 14 journées, à 80 % à partir de 15. Un seul effet à la fois. Chaque prévision indique s'il est actif et de combien.<br>
           • Météo et événement s'appliquent par-dessus (mauvais temps ×1,20 · beau ×0,82 · marché ×1,28 · concert ×1,40). Fourchette : pessimiste −22 %, optimiste +28 %.
         </p>
       </div>
@@ -678,6 +679,6 @@ body{background:#0a0a0a !important;}
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
 
-<script src="app.js?v=12.6"></script>
+<script src="app.js?v=12.7"></script>
 </body>
 </html>

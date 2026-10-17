@@ -31,7 +31,7 @@ const db = firebase.firestore();
 // Seules les journées TERMINÉES sont résumées (jamais la journée en cours).
 // Les prévisions utilisent ensuite ces journées à la place des estimations.
 // ============================================================
-const BUILD_VERSION = "v.17/10/2026 16:15";
+const BUILD_VERSION = "v.17/10/2026 16:45";
 const VERSION_CALCUL = 2; // changer ce numéro force un recalcul complet de toutes les journées
 
 const FIREBASE_MOULE_CONFIG = {
@@ -343,6 +343,46 @@ function courbeReelle(jourSemaine, saison) {
 }
 
 // Panier moyen réel par couvert sur les journées comparables (null si moins de 5 journées)
+// ------------------------------------------------------------
+// EFFET « PÉRIODE » APPRIS SUR LE RÉEL (se met en route tout seul)
+// Pleine saison : avant / après le 15 août. Autres saisons : début (1-10),
+// milieu (11-20), fin (21-31) du mois.
+// Pour chaque journée réelle de la saison, on mesure son écart à la moyenne des
+// journées du même jour de la semaine (ex. ce samedi / moyenne des samedis), puis on
+// fait la moyenne de ces écarts par période. Rien n'est appliqué tant qu'une période
+// a moins de 5 journées ; ensuite 50 % de l'effet (5 à 14 journées), puis 80 % (15 et plus).
+// Un seul effet à la fois (pas de cumul fin de mois + après 15 août).
+// ------------------------------------------------------------
+const MIN_JOURNEES_EFFET_PERIODE = 5;
+function periodeDe(date, saison) {
+  if (saison === 'haute') {
+    const apres15 = date.getMonth() === 7 && date.getDate() > 15;
+    return { cle: apres15 ? 'apres15aout' : 'avant15aout', libelle: apres15 ? 'après le 15 août' : 'avant le 16 août' };
+  }
+  const j = date.getDate();
+  if (j <= 10) return { cle: 'debut', libelle: 'début de mois (1-10)' };
+  if (j <= 20) return { cle: 'milieu', libelle: 'milieu de mois (11-20)' };
+  return { cle: 'fin', libelle: 'fin de mois (21-31)' };
+}
+function effetPeriode(date, saison) {
+  const cible = periodeDe(date, saison);
+  const jours = Reel.journees.filter(j => j.saison === saison && j.couverts > 0);
+  // moyenne par jour de la semaine (référence)
+  const moyJS = {};
+  jours.forEach(j => { (moyJS[j.jourSemaine] = moyJS[j.jourSemaine] || []).push(j.couverts); });
+  Object.keys(moyJS).forEach(k => { const a = moyJS[k]; moyJS[k] = a.length >= 2 ? a.reduce((s, x) => s + x, 0) / a.length : null; });
+  const ratios = jours
+    .filter(j => moyJS[j.jourSemaine] && periodeDe(new Date(j.dateStr + "T12:00:00"), saison).cle === cible.cle)
+    .map(j => j.couverts / moyJS[j.jourSemaine]);
+  const n = ratios.length;
+  if (n < MIN_JOURNEES_EFFET_PERIODE) {
+    return { facteur: 1, actif: false, n, libelle: cible.libelle };
+  }
+  const brut = ratios.reduce((s, x) => s + x, 0) / n;
+  const poids = n >= 15 ? 0.80 : 0.50;
+  return { facteur: 1 + (brut - 1) * poids, brut, poids, actif: true, n, libelle: cible.libelle };
+}
+
 function panierReel(jourSemaine, saison) {
   let base = journeesComparables(jourSemaine, saison);
   if (base.length < 5) base = Reel.journees.filter(j => j.saison === saison && j.couverts > 0);
@@ -1174,6 +1214,17 @@ async function genererPrevisions() {
   } catch(e) {
     console.error("Erreur lecture données réelles:", e);
   }
+  // Effet de période appris (fin de mois, après le 15 août…) — inactif tant qu'il manque des journées
+  try {
+    const ep = effetPeriode(date, saison);
+    if (ep.actif && Math.abs(ep.facteur - 1) >= 0.005) {
+      clientsMoy = Math.round(clientsMoy * ep.facteur);
+      const pct = Math.round((ep.brut - 1) * 100);
+      sourceLabel += ` · 📆 ${ep.libelle} : ${pct > 0 ? '+' : ''}${pct} % mesuré sur ${ep.n} journées, appliqué à ${Math.round(ep.poids * 100)} %`;
+    } else if (!ep.actif) {
+      sourceLabel += ` · 📆 effet « ${ep.libelle} » pas encore actif (${ep.n}/${MIN_JOURNEES_EFFET_PERIODE} journées)`;
+    }
+  } catch (e) { console.error("Effet période :", e); }
   if (!ouvertLe(date)) sourceLabel = "⚠️ Jour normalement FERMÉ selon le calendrier · " + sourceLabel;
   sourceLabel += infoPanier;
 
