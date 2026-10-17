@@ -31,7 +31,7 @@ const db = firebase.firestore();
 // Seules les journées TERMINÉES sont résumées (jamais la journée en cours).
 // Les prévisions utilisent ensuite ces journées à la place des estimations.
 // ============================================================
-const BUILD_VERSION = "v.17/10/2026 13:15";
+const BUILD_VERSION = "v.17/10/2026 14:30";
 const VERSION_CALCUL = 2; // changer ce numéro force un recalcul complet de toutes les journées
 
 const FIREBASE_MOULE_CONFIG = {
@@ -372,6 +372,7 @@ function showTab(tab) {
   if (tab === 'reglages') chargerReglages();
   if (tab === 'import') initImport();
   if (tab === 'previsions') initPrevisions();
+  if (tab === 'semaine') initSemaine();
 }
 
 // ============================================================
@@ -1383,6 +1384,30 @@ function afficherResultatsPrevisions(clientsMoy, clientsMin, clientsMax, pm, jou
     </table>
     </div>`;
 
+  // Mémorise la prévision affichée pour le bouton « Enregistrer »
+  const staffParCreneau = enSalle.map((n, i) => calcStaff(n, creneaux[i].snack));
+  dernierResultat = {
+    dateStr: prevState.dateStr,
+    jourSemaine,
+    saison: document.getElementById("prevSaison").value,
+    meteo: document.getElementById("prevMeteo").value,
+    event: document.getElementById("prevEvent").value,
+    clientsMin, clientsMoy, clientsMax,
+    caMin: Math.round(caMin * 100) / 100, caMoy: Math.round(caMoy * 100) / 100, caMax: Math.round(caMax * 100) / 100,
+    pm,
+    sourceLabel: sourceLabel || '',
+    manuel: String(sourceLabel || '').startsWith('✏️'),
+    fiabilite: fiabilite || 0,
+    staffMax: Math.max(...staffParCreneau.map(s => s.total)),
+    totalArrivees,
+    creneaux: creneaux.map((c, i) => ({
+      heure: c.heure, label: c.label, snack: !!c.snack,
+      arrivees: arrivees[i], enSalle: enSalle[i],
+      ca: Math.round(caParCreneau[i] * 100) / 100,
+      staff: staffParCreneau[i]
+    }))
+  };
+
   document.getElementById("prevResultat").style.display = "block";
   document.getElementById("prevResultat").scrollIntoView({ behavior: 'smooth' });
 }
@@ -1751,3 +1776,234 @@ if (Notification.permission !== "granted") Notification.requestPermission();
 
 // SERVICE WORKER
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("service-worker.js");
+
+// ============================================================
+// PRÉVISIONS ENREGISTRÉES — par date et par semaine (17/10/2026)
+// ------------------------------------------------------------
+// Collection « previsions » : un document par date (AAAA-MM-JJ). Réenregistrer
+// une date remplace l'ancienne prévision de cette date.
+// L'onglet « 🗓️ Mes prévisions » affiche une semaine (lundi → dimanche) avec,
+// pour chaque jour, le prévu, le réel (journées réelles de l'appli de commande)
+// et l'écart. Un clic sur un jour ouvre le détail par créneau de 30 min.
+// ============================================================
+const PREVISIONS = "previsions";
+let dernierResultat = null;   // dernière prévision affichée (prête à être enregistrée)
+let semaineLundi = null;      // "AAAA-MM-JJ" du lundi affiché
+let semainePrevisions = {};   // dateStr → prévision enregistrée
+let semaineJourOuvert = null;
+
+function dateStrLocale(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function lundiDe(dateStr) {
+  const d = new Date(dateStr + "T12:00:00");
+  const decal = (d.getDay() + 6) % 7; // lundi = 0
+  d.setDate(d.getDate() - decal);
+  return dateStrLocale(d);
+}
+function libelleJour(dateStr, long) {
+  return new Date(dateStr + "T12:00:00").toLocaleDateString('fr-FR', long
+    ? { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }
+    : { weekday: 'short', day: '2-digit', month: '2-digit' });
+}
+function numeroSemaine(dateStr) {
+  const d = new Date(dateStr + "T12:00:00");
+  const jeudi = new Date(d); jeudi.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));
+  const debutAnnee = new Date(jeudi.getFullYear(), 0, 4);
+  return 1 + Math.round(((jeudi - debutAnnee) / 86400000 - 3 + ((debutAnnee.getDay() + 6) % 7)) / 7);
+}
+function ecartPct(prevu, reel) {
+  if (!prevu || reel === null || reel === undefined) return null;
+  return Math.round((reel - prevu) / prevu * 100);
+}
+function badgeEcart(p) {
+  if (p === null) return '<span style="color:var(--text-muted)">—</span>';
+  const a = Math.abs(p);
+  const coul = a <= 10 ? 'var(--success)' : a <= 25 ? 'var(--warning)' : 'var(--danger)';
+  return `<span style="color:${coul};font-weight:700">${p > 0 ? '+' : ''}${p} %</span>`;
+}
+
+// Enregistre la prévision affichée (silencieux = pas de confirmation, pour la génération de semaine)
+async function enregistrerPrevision(silencieux) {
+  const r = dernierResultat;
+  if (!r || !r.dateStr) { showToast("Génère d'abord une prévision", "error"); return false; }
+  try {
+    if (!silencieux) {
+      const ex = await db.collection(PREVISIONS).doc(r.dateStr).get();
+      if (ex.exists && !confirm(`Une prévision existe déjà pour ${libelleJour(r.dateStr, true)}. La remplacer ?`)) return false;
+    }
+    await db.collection(PREVISIONS).doc(r.dateStr).set({ ...r, enregistreLe: Date.now() });
+    if (!silencieux) showToast(`✅ Prévision du ${libelleJour(r.dateStr)} enregistrée`);
+    return true;
+  } catch (e) {
+    console.error("Enregistrement prévision :", e);
+    showToast("❌ Enregistrement impossible" + (e.code === 'permission-denied' ? " (règles Firestore)" : ""), "error");
+    return false;
+  }
+}
+
+// Génère et enregistre les 7 jours de la semaine affichée (jours fermés ignorés),
+// avec la météo et l'événement choisis dans l'onglet Prévisions.
+async function genererSemaine() {
+  if (!semaineLundi) return;
+  const meteo = document.getElementById("prevMeteo").selectedOptions[0].textContent.trim();
+  if (!confirm(`Générer et enregistrer les prévisions de toute la semaine ${numeroSemaine(semaineLundi)} ?\n\nMétéo utilisée : ${meteo} (modifiable dans l'onglet Prévisions).\nLes jours fermés sont ignorés, les prévisions existantes sont remplacées.`)) return;
+  const btn = document.getElementById("btnGenererSemaine");
+  if (btn) { btn.disabled = true; btn.textContent = "Génération en cours…"; }
+  let nb = 0;
+  const hidden = document.getElementById("prevDate");
+  const dateAvant = hidden.value;
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(semaineLundi + "T12:00:00"); d.setDate(d.getDate() + i);
+    if (!ouvertLe(d)) continue;
+    hidden.value = dateStrLocale(d);
+    majAffichageDate();               // règle aussi la saison automatiquement
+    await genererPrevisions();
+    if (await enregistrerPrevision(true)) nb++;
+  }
+  hidden.value = dateAvant; majAffichageDate();
+  if (btn) { btn.disabled = false; btn.textContent = "⚡ Générer et enregistrer toute la semaine"; }
+  showToast(`✅ ${nb} prévision${nb > 1 ? 's' : ''} enregistrée${nb > 1 ? 's' : ''}`);
+  showTab('semaine');
+}
+
+function initSemaine() {
+  if (!semaineLundi) semaineLundi = lundiDe(dateStrLocale(new Date()));
+  chargerSemaine();
+}
+function changerSemaine(delta) {
+  const d = new Date(semaineLundi + "T12:00:00"); d.setDate(d.getDate() + 7 * delta);
+  semaineLundi = dateStrLocale(d); semaineJourOuvert = null; chargerSemaine();
+}
+function allerSemaineDuJour() { semaineLundi = lundiDe(dateStrLocale(new Date())); semaineJourOuvert = null; chargerSemaine(); }
+function allerALaDate(val) {
+  if (!val) return;
+  semaineLundi = lundiDe(val); semaineJourOuvert = val; chargerSemaine();
+}
+
+async function chargerSemaine() {
+  const dim = new Date(semaineLundi + "T12:00:00"); dim.setDate(dim.getDate() + 6);
+  const dimanche = dateStrLocale(dim);
+  document.getElementById("semaineTitre").textContent =
+    `Semaine ${numeroSemaine(semaineLundi)} — du ${libelleJour(semaineLundi)} au ${libelleJour(dimanche)}`;
+  document.getElementById("semaineTable").innerHTML = '<p class="empty-state">Chargement…</p>';
+  try {
+    if (Reel.user) await Reel.synchroniser(false); else await Reel.chargerJournees();
+    const snap = await db.collection(PREVISIONS).where('dateStr', '>=', semaineLundi).where('dateStr', '<=', dimanche).get();
+    semainePrevisions = {};
+    snap.forEach(doc => { semainePrevisions[doc.id] = doc.data(); });
+  } catch (e) {
+    console.error("Lecture prévisions :", e);
+    document.getElementById("semaineTable").innerHTML = '<p class="empty-state">❌ Lecture impossible (internet ou règles Firestore)</p>';
+    return;
+  }
+  afficherSemaine();
+}
+
+function afficherSemaine() {
+  const reels = {}; Reel.journees.forEach(j => { reels[j.dateStr] = j; });
+  const aujourdhui = dateStrLocale(new Date());
+  let tPrevCv = 0, tPrevCa = 0, tReelCv = 0, tReelCa = 0, tPrevCvComparable = 0, tPrevCaComparable = 0;
+  const lignes = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(semaineLundi + "T12:00:00"); d.setDate(d.getDate() + i);
+    const ds = dateStrLocale(d);
+    const p = semainePrevisions[ds], r = reels[ds];
+    const ferme = !ouvertLe(d);
+    if (p) { tPrevCv += p.clientsMoy || 0; tPrevCa += p.caMoy || 0; }
+    if (r) { tReelCv += r.couverts || 0; tReelCa += r.ca || 0; }
+    if (p && r) { tPrevCvComparable += p.clientsMoy || 0; tPrevCaComparable += p.caMoy || 0; }
+    lignes.push(`<tr onclick="ouvrirJourSemaine('${ds}')" style="cursor:pointer;${ds === semaineJourOuvert ? 'background:rgba(212,160,23,0.12);' : ''}">
+      <td><strong>${libelleJour(ds)}</strong>${ds === aujourdhui ? ' <span style="color:var(--gold)">• aujourd\'hui</span>' : ''}${ferme ? ' <span style="color:var(--text-muted)">(fermé)</span>' : ''}</td>
+      <td style="color:var(--gold);font-weight:600">${p ? p.clientsMoy : '—'}</td>
+      <td>${p ? formatEuro(p.caMoy) : '—'}</td>
+      <td style="font-weight:600">${r ? r.couverts : '—'}</td>
+      <td>${r ? formatEuro(r.ca || 0) : '—'}</td>
+      <td>${p && r ? badgeEcart(ecartPct(p.clientsMoy, r.couverts)) : '—'}</td>
+      <td>${p && r ? badgeEcart(ecartPct(p.caMoy, r.ca)) : '—'}</td>
+      <td>${p ? (p.staffMax || '—') : '—'}</td>
+    </tr>`);
+  }
+  document.getElementById("semaineTable").innerHTML = `
+    <div class="table-wrap"><table style="min-width:640px;">
+      <thead><tr><th>Jour</th><th>Couverts prévus</th><th>CA prévu</th><th>Couverts réels</th><th>CA réel</th><th>Écart couverts</th><th>Écart CA</th><th>Staff max</th></tr></thead>
+      <tbody>${lignes.join('')}</tbody>
+      <tfoot><tr style="border-top:2px solid var(--ocean-border);font-weight:700;">
+        <td>Total semaine</td><td style="color:var(--gold)">${tPrevCv || '—'}</td><td>${tPrevCa ? formatEuro(tPrevCa) : '—'}</td>
+        <td>${tReelCv || '—'}</td><td>${tReelCa ? formatEuro(tReelCa) : '—'}</td>
+        <td>${tPrevCvComparable ? badgeEcart(ecartPct(tPrevCvComparable, tReelCv && Object.keys(semainePrevisions).filter(ds => reels[ds]).reduce((s, ds) => s + reels[ds].couverts, 0))) : '—'}</td>
+        <td>${tPrevCaComparable ? badgeEcart(ecartPct(tPrevCaComparable, Object.keys(semainePrevisions).filter(ds => reels[ds]).reduce((s, ds) => s + (reels[ds].ca || 0), 0))) : '—'}</td>
+        <td></td></tr></tfoot>
+    </table></div>
+    <p style="font-size:0.75rem;color:var(--text-muted);margin-top:8px;">Écart = (réel − prévu) / prévu, calculé seulement sur les jours qui ont à la fois une prévision et une journée réelle. Vert ≤ 10 % · orange ≤ 25 % · rouge au-delà. Touche un jour pour voir le détail.</p>`;
+  if (semaineJourOuvert) ouvrirJourSemaine(semaineJourOuvert); else document.getElementById("semaineDetail").innerHTML = '';
+}
+
+function ouvrirJourSemaine(ds) {
+  semaineJourOuvert = ds;
+  const p = semainePrevisions[ds];
+  const r = Reel.journees.find(j => j.dateStr === ds);
+  const el = document.getElementById("semaineDetail");
+  if (!p && !r) {
+    el.innerHTML = `<div class="card"><div class="card-title">${libelleJour(ds, true)}</div>
+      <p class="empty-state">Pas de prévision enregistrée ni de journée réelle pour ce jour.</p>
+      <button class="btn btn-secondary" onclick="prevoirCeJour('${ds}')">📅 Faire la prévision de ce jour</button></div>`;
+    el.scrollIntoView({ behavior: 'smooth' });
+    return;
+  }
+  const reelCr = (r && r.creneaux) || {};
+  const lignes = (p ? p.creneaux : Object.keys(reelCr).sort((a, b) => a - b).map(k => ({ heure: libelleCreneau(parseFloat(k)) })))
+    .map(c => {
+      const h = parseInt(c.heure, 10) + (String(c.heure).endsWith('30') ? 0.5 : 0);
+      const rc = reelCr[h.toFixed(1)];
+      const s = c.staff;
+      return `<tr>
+        <td><strong>${c.heure}</strong></td>
+        <td style="color:var(--gold);text-align:center;">${c.arrivees ?? '—'}</td>
+        <td style="text-align:center;">${rc ? rc.arrivees : (r ? 0 : '—')}</td>
+        <td>${c.enSalle ?? '—'}</td>
+        <td>${c.ca !== undefined ? formatEuro(c.ca) : '—'}</td>
+        <td>${s ? `<div class="staff-badges">
+          ${s.marmites > 0 ? `<span class="sbadge">🍲×${s.marmites}</span>` : ''}
+          ${s.friteuses > 0 ? `<span class="sbadge">🍟×${s.friteuses}</span>` : ''}
+          ${s.remplissage > 0 ? `<span class="sbadge">🔄×1</span>` : ''}
+          <span class="sbadge">🧑‍🍳×${s.salle}</span>
+          ${s.bar > 0 ? `<span class="sbadge">🍺×${s.bar}</span>` : ''}
+          <span class="sbadge total-badge">= ${s.total}</span></div>` : '—'}</td></tr>`;
+    }).join('');
+  el.innerHTML = `<div class="card">
+    <div class="card-title">${libelleJour(ds, true)}</div>
+    ${p ? `<p style="font-size:0.82rem;color:var(--text-secondary);line-height:1.6;margin-bottom:10px;">
+      Prévu : <strong style="color:var(--gold)">${p.clientsMoy} couverts</strong> (${p.clientsMin}–${p.clientsMax}) ·
+      CA ${formatEuro(p.caMin)} / <strong>${formatEuro(p.caMoy)}</strong> / ${formatEuro(p.caMax)} · panier ${formatEuro(p.pm)}<br>
+      Saison ${p.saison || '—'} · météo ${p.meteo || '—'} · événement ${p.event || '—'}${p.manuel ? ' · ✏️ CA ajusté à la main' : ''}<br>
+      <span style="color:var(--text-muted)">${p.sourceLabel || ''} — enregistrée le ${p.enregistreLe ? new Date(p.enregistreLe).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'}</span></p>`
+      : '<p style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:10px;">Pas de prévision enregistrée pour ce jour.</p>'}
+    ${r ? `<p style="font-size:0.82rem;margin-bottom:10px;">Réel : <strong>${r.couverts} couverts</strong> · ${r.tables} tables · CA ${formatEuro(r.ca || 0)}${r.panierCouvert ? ' · panier ' + formatEuro(r.panierCouvert) : ''}
+      ${p ? ` — écart couverts ${badgeEcart(ecartPct(p.clientsMoy, r.couverts))} · écart CA ${badgeEcart(ecartPct(p.caMoy, r.ca))}` : ''}</p>` : ''}
+    <div class="table-wrap"><table style="min-width:560px;">
+      <thead><tr><th>Heure</th><th style="text-align:center;">Arrivées prévues</th><th style="text-align:center;">Arrivées réelles</th><th>En salle</th><th>CA prévu</th><th>Staff prévu</th></tr></thead>
+      <tbody>${lignes}</tbody></table></div>
+    <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
+      <button class="btn btn-secondary" style="width:auto;" onclick="prevoirCeJour('${ds}')">📅 Refaire la prévision de ce jour</button>
+      ${p ? `<button class="btn btn-secondary" style="width:auto;" onclick="supprimerPrevision('${ds}')">🗑️ Supprimer cette prévision</button>` : ''}
+    </div></div>`;
+  afficherSemaineSelection();
+  el.scrollIntoView({ behavior: 'smooth' });
+}
+function afficherSemaineSelection() {
+  document.querySelectorAll('#semaineTable tbody tr').forEach((tr, i) => {
+    const d = new Date(semaineLundi + "T12:00:00"); d.setDate(d.getDate() + i);
+    tr.style.background = dateStrLocale(d) === semaineJourOuvert ? 'rgba(212,160,23,0.12)' : '';
+  });
+}
+function prevoirCeJour(ds) {
+  document.getElementById("prevDate").value = ds;
+  showTab('previsions');
+  showToast("Choisis la météo / l'événement puis « Générer les prévisions »");
+}
+async function supprimerPrevision(ds) {
+  if (!confirm(`Supprimer la prévision du ${libelleJour(ds, true)} ?`)) return;
+  try { await db.collection(PREVISIONS).doc(ds).delete(); semaineJourOuvert = null; chargerSemaine(); showToast("Prévision supprimée"); }
+  catch (e) { showToast("❌ Suppression impossible", "error"); }
+}
