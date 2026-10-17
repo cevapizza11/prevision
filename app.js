@@ -20,8 +20,10 @@ const db = firebase.firestore();
 // Chaque journée de service terminée est relue dans l'appli de commande
 // (projet Firebase « commandemoulesmile », en LECTURE SEULE) puis résumée
 // dans ce projet, collection « journees_reelles » (un document par jour) :
-//   - CA réel     = somme des additions encaissées (repas employés exclus)
-//   - tables      = nombre d'additions encaissées
+//   - CA réel     = montant des tables encaissées (« visites », créées à chaque encaissement ;
+//                   repas employés exclus). Si l'historique des encaissements donne plus
+//                   (table sans heure d'arrivée), c'est lui qui est retenu.
+//   - tables      = nombre de tables encaissées (même règle)
 //   - couverts    = somme des couverts saisis sur les jetons (collection « visites »)
 //   - créneaux    = arrivées (couverts) et CA par tranche de 30 min, d'après
 //                   l'heure d'arrivée de la table (création du jeton)
@@ -29,7 +31,8 @@ const db = firebase.firestore();
 // Seules les journées TERMINÉES sont résumées (jamais la journée en cours).
 // Les prévisions utilisent ensuite ces journées à la place des estimations.
 // ============================================================
-const BUILD_VERSION = "v.17/10/2026 13:10";
+const BUILD_VERSION = "v.17/10/2026 13:15";
+const VERSION_CALCUL = 2; // changer ce numéro force un recalcul complet de toutes les journées
 
 const FIREBASE_MOULE_CONFIG = {
   apiKey: "AIzaSyDUb3LtVsMAq986DgtHwkMBeQFr8A8A2nU",
@@ -155,7 +158,8 @@ const Reel = {
       const cfgRef = db.collection("config").doc("syncAppliCommande");
       const cfg = await cfgRef.get();
       const jourEnCours = jourServiceDe(Date.now());
-      const dernierFait = cfg.exists ? cfg.data().dernierJourComplet : null;
+      // Si la méthode de calcul a changé, on recalcule toutes les journées depuis le début
+      const dernierFait = (cfg.exists && cfg.data().versionCalcul === VERSION_CALCUL) ? cfg.data().dernierJourComplet : null;
       const premierJour = dernierFait ? ajouterJours(dernierFait, 1) : ajouterJours(jourEnCours, -JOURS_PREMIERE_SYNCHRO);
       if (premierJour >= jourEnCours) { // rien de nouveau : la journée en cours n'est jamais résumée
         await this.chargerJournees();
@@ -173,7 +177,7 @@ const Reel = {
 
       const jours = {};
       const jourVide = (dateStr) => jours[dateStr] || (jours[dateStr] = {
-        dateStr, ca: 0, tables: 0, couverts: 0, couvertsRepas: 0, tablesSansCouverts: 0, visites: 0, creneaux: {}
+        dateStr, ca: 0, tables: 0, caVisites: 0, couverts: 0, couvertsRepas: 0, tablesSansCouverts: 0, visites: 0, creneaux: {}
       });
 
       // Encaissements : CA et nombre de tables
@@ -197,6 +201,7 @@ const Reel = {
         const j = jourVide(jourServiceDe(msDe(v.heureDepart) || msArr));
         const c = Number(v.couverts) || 0;
         j.visites++;
+        j.caVisites += Number(v.total) || 0;
         if (!c) j.tablesSansCouverts++;
         j.couverts += c;
         if (v.type !== 'boisson') j.couvertsRepas += c;
@@ -210,6 +215,7 @@ const Reel = {
       let batch = db.batch(), n = 0;
       Object.values(jours).forEach(j => {
         if (!j.tables && !j.visites) return;
+        j.caRetenu = Math.max(j.ca, j.caVisites);
         // Tables sans couverts renseignés : on les compte avec la moyenne des autres tables
         const moyCouverts = (j.visites - j.tablesSansCouverts) > 0 ? j.couverts / (j.visites - j.tablesSansCouverts) : 2;
         const couvertsEstimes = Math.round(j.couverts + j.tablesSansCouverts * moyCouverts);
@@ -219,12 +225,12 @@ const Reel = {
           date: d,
           jourSemaine: d.getDay(),
           saison: saisonPour(d),
-          ca: Math.round(j.ca * 100) / 100,
-          tables: j.tables,
+          ca: Math.round(Math.max(j.ca, j.caVisites) * 100) / 100,
+          tables: Math.max(j.tables, j.visites),
           couverts: couvertsEstimes,
           couvertsRepas: j.couvertsRepas,
           tablesSansCouverts: j.tablesSansCouverts,
-          panierCouvert: couvertsEstimes ? Math.round(j.ca / couvertsEstimes * 100) / 100 : null,
+          panierCouvert: couvertsEstimes ? Math.round(j.caRetenu / couvertsEstimes * 100) / 100 : null,
           creneaux: j.creneaux,
           source: 'appli de commande',
           majLe: Date.now()
@@ -233,7 +239,7 @@ const Reel = {
       });
       lots.push(batch);
       for (const b of lots) await b.commit();
-      await cfgRef.set({ dernierJourComplet: ajouterJours(jourEnCours, -1), majLe: Date.now() });
+      await cfgRef.set({ dernierJourComplet: ajouterJours(jourEnCours, -1), versionCalcul: VERSION_CALCUL, majLe: Date.now() });
 
       await this.chargerJournees();
       this.derniereSynchro = Date.now();
